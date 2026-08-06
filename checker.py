@@ -630,7 +630,8 @@ def check_summary(sheet: Sheet, rep: Report):
             if len(t) < 6:
                 continue
             if re.search(r"…|\.{5,}", t):
-                add_text("warn", r, c, "ยังไม่ได้เติมข้อความ", f'ข้อความสรุปยังเป็นจุดไข่ปลา: "{t[:60]}"')
+                add_text("bad", r, c, "ยังไม่ได้เติมข้อความ",
+                         f'ข้อความสรุปยังเป็นจุดไข่ปลา ต้องเติมก่อนส่งงาน: "{t[:70]}"')
             for ns in re.findall(r"\d[\d,]*\.?\d*", t):
                 v = float(ns.replace(",", ""))
                 if v < 100:
