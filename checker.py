@@ -601,6 +601,17 @@ def check_hourly(sheet: Sheet, rep: Report) -> bool:
 def check_summary(sheet: Sheet, rep: Report):
     grid, name = sheet.grid, sheet.name
     add = lambda sev, r, c, title, detail: rep.issues.append(Issue(name, a1(r, c), sev, title, detail))
+    # ข้อความสรุป/หัวเรื่องไม่เคยถูกใส่สี จึงตรวจเสมอ
+    add_text = lambda sev, r, c, title, detail: rep.issues.append(
+        Issue(name, a1(r, c), sev, title, detail, exempt_color=True))
+
+    def expected_for(unit: str, got: float):
+        """ยอดรวมที่ควรจะเป็น สำหรับตัวเลขที่มีหน่วย คน/คัน"""
+        kind = "คน" if unit == "คน" else "รถ"
+        cands = [k for k in rep.key_totals if kind in k["label"]]
+        cands = [k for k in cands if "เฉลี่ย" in k["group"]] or cands   # หลายวัน = ใช้ค่าเฉลี่ย
+        cands = [k for k in cands if "ทั้งหมด" in k["label"]] or cands
+        return min(cands, key=lambda k: abs(k["value"] - got)) if cands else None
     checked = bad = 0
     for r, row in enumerate(grid):
         for c, raw in enumerate(row):
@@ -619,21 +630,30 @@ def check_summary(sheet: Sheet, rep: Report):
             if len(t) < 6:
                 continue
             if re.search(r"…|\.{5,}", t):
-                add("warn", r, c, "ยังไม่ได้เติมข้อความ", f'ข้อความสรุปยังเป็นจุดไข่ปลา: "{t[:60]}"')
+                add_text("warn", r, c, "ยังไม่ได้เติมข้อความ", f'ข้อความสรุปยังเป็นจุดไข่ปลา: "{t[:60]}"')
             for ns in re.findall(r"\d[\d,]*\.?\d*", t):
                 v = float(ns.replace(",", ""))
                 if v < 100:
                     continue
                 if f"{ns}%" in t:
                     if not any(near(b, v / 100, PTOL) for b in rep.numbers):
-                        add("warn", r, c, "ตัวเลขในข้อความไม่ตรง",
+                        add_text("warn", r, c, "ตัวเลขในข้อความไม่ตรง",
                             f"ข้อความระบุ {ns}% แต่ไม่พบสัดส่วนนี้ในชีต data")
                     continue
                 if 2500 < v < 2600:
                     continue
                 if not any(near(b, v) for b in rep.numbers):
-                    add("bad", r, c, "ตัวเลขในข้อความไม่ตรง",
-                        f"ข้อความสรุประบุ {ns} แต่ไม่พบตัวเลขนี้ในชีต data")
+                    unit = "คน" if re.search(re.escape(ns) + r"\s*คน", t) else (
+                        "คัน" if re.search(re.escape(ns) + r"\s*คัน", t) else "")
+                    exp = expected_for(unit, v) if unit else None
+                    if exp:
+                        add_text("bad", r, c, "ยอดในข้อความสรุปไม่ตรงกับตาราง",
+                                 f'ข้อความ "{t[:60]}" ระบุ {ns} {unit} แต่ยอดจริงคือ '
+                                 f'{fmt(exp["value"])} ({exp["label"]}) — ต่าง {fmt(v - exp["value"])} '
+                                 f'ให้แก้ตัวเลขในข้อความให้ตรงกับตาราง')
+                    else:
+                        add_text("bad", r, c, "ตัวเลขในข้อความไม่ตรง",
+                                 f"ข้อความสรุประบุ {ns} แต่ไม่พบตัวเลขนี้ในชีต data")
     if checked and not bad:
         rep.passed.append((name, f"ตัวเลข {checked} ค่าตรงกับชีต data ทั้งหมด"))
 
