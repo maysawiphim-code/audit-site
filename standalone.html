@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ตรวจไฟล์รายงานจับตัวเลข</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--ink:#0E1419;--panel:#161E26;--panel2:#1B242D;--line:#26333F;--paper:#F2F4F3;--muted:#8A9AA8;
+--mark:#FFC53D;--bad:#FF6B5A;--ok:#4FD1A5;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ink);color:var(--paper);font-family:"IBM Plex Sans Thai",system-ui,sans-serif;
+font-size:15px;line-height:1.65;
+background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+background-size:56px 56px;background-position:-1px -1px}
+.wrap{max-width:1200px;margin:0 auto;padding:26px 18px 90px}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.22em;color:var(--mark);text-transform:uppercase}
+h1{font-family:"Bai Jamjuree",sans-serif;font-weight:700;font-size:clamp(26px,4.6vw,42px);line-height:1.15;margin:.25em 0 .3em}
+h1 .hl{background:linear-gradient(transparent 62%,rgba(255,197,61,.35) 62%)}
+.sub{color:var(--muted);max-width:64ch;margin:0 0 24px}
+.drop{border:1.5px dashed var(--line);border-radius:14px;background:rgba(22,30,38,.8);padding:30px 20px;
+text-align:center;cursor:pointer;transition:.18s}
+.drop:hover,.drop.over{border-color:var(--mark);background:rgba(255,197,61,.06)}
+.drop b{font-family:"Bai Jamjuree",sans-serif;font-size:18px}
+.drop small{display:block;color:var(--muted);margin-top:6px}
+input[type=file]{display:none}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0 0}
+.tab{background:var(--panel);border:1px solid var(--line);border-radius:9px 9px 0 0;padding:9px 14px;font-size:13px;
+cursor:pointer;color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab.on{background:var(--panel2);color:var(--paper);border-bottom-color:var(--panel2);box-shadow:inset 0 2px 0 var(--mark)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0}
+.head{display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;justify-content:space-between}
+.head h2{font-family:"Bai Jamjuree",sans-serif;font-size:19px;margin:0}
+.head .meta{color:var(--muted);font-size:13px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:16px 0 0}
+.stat{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--line);border-radius:10px;padding:12px 14px}
+.stat.bad{border-left-color:var(--bad)}.stat.warn{border-left-color:var(--mark)}.stat.ok{border-left-color:var(--ok)}
+.stat .n{font-family:"Bai Jamjuree",sans-serif;font-size:27px;font-weight:700;line-height:1}
+.stat .l{font-size:12px;color:var(--muted);margin-top:4px}
+.grp{border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden;background:var(--panel2)}
+.grp>summary{cursor:pointer;list-style:none;padding:12px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grp>summary::-webkit-details-marker{display:none}
+.grp>summary::before{content:"▸";color:var(--mark);font-size:12px}
+.grp[open]>summary::before{content:"▾"}
+.grp .gt{font-weight:600}
+.badge{font-family:"IBM Plex Mono",monospace;font-size:11px;padding:2px 8px;border-radius:999px}
+.badge.bad{background:rgba(255,107,90,.16);color:var(--bad)}
+.badge.warn{background:rgba(255,197,61,.16);color:var(--mark)}
+.badge.ok{background:rgba(79,209,165,.14);color:var(--ok)}
+.badge.mute{background:#131A21;color:var(--muted)}
+.rows{border-top:1px solid var(--line)}
+.row{display:flex;gap:12px;padding:9px 16px;border-bottom:1px dashed var(--line);font-size:13.5px;align-items:baseline}
+.row:last-child{border-bottom:0}
+.row .loc{font-family:"IBM Plex Mono",monospace;color:var(--mark);flex:0 0 auto;min-width:118px;cursor:pointer}
+.row .loc:hover{text-decoration:underline}
+.row .d{color:#C8D3DC}
+.okline{padding:7px 16px;font-size:13.5px;color:var(--ok);border-bottom:1px dashed var(--line)}
+.okline:last-child{border-bottom:0}
+.tblbox{overflow:auto;max-height:420px;border:1px solid var(--line);border-radius:10px;margin-top:10px}
+table{border-collapse:collapse;font-size:12.5px;font-family:"IBM Plex Mono",monospace}
+td,th{border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:4px 8px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+th{position:sticky;top:0;background:var(--panel2);color:var(--muted);z-index:2}
+td.rn{position:sticky;left:0;background:#131A21;color:#5C6B79;text-align:right;z-index:1}
+td.num{text-align:right}
+td.f-bad{background:rgba(255,107,90,.18);color:var(--bad);font-weight:600}
+td.f-warn{background:rgba(255,197,61,.18);color:var(--mark);font-weight:600}
+td.flash{outline:2px solid var(--mark);outline-offset:-2px}
+.btn{font-family:inherit;font-size:13px;background:var(--mark);color:#1B1200;border:0;border-radius:8px;padding:8px 15px;font-weight:600;cursor:pointer}
+.btn.ghost{background:transparent;color:var(--paper);border:1px solid var(--line)}
+.btn:focus-visible,.drop:focus-visible,summary:focus-visible,.tab:focus-visible{outline:2px solid var(--mark);outline-offset:3px}
+.sheetsel{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px}
+.sheetsel button{font-family:inherit;font-size:12.5px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);
+border-radius:999px;padding:5px 12px;cursor:pointer}
+.sheetsel button.on{border-color:var(--mark);color:var(--paper)}
+.hide{display:none}
+footer{color:var(--muted);font-size:12.5px;margin-top:30px;border-top:1px solid var(--line);padding-top:14px}
+@media(max-width:600px){.row{flex-direction:column;gap:2px}.row .loc{min-width:0}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Site Count Report Checker</div>
+  <h1>ตรวจไฟล์รายงาน<span class="hl">จับตัวเลข</span>ก่อนส่ง</h1>
+  <p class="sub">วางไฟล์รายงาน (.xls/.xlsx) ได้ทีละหลายไฟล์ ระบบจะไล่ตรวจเฉพาะชีตที่มองเห็นและเฉพาะช่องที่ใส่สีไว้ในไฟล์ โดยเน้นยอดรวมของคนและรถ ยอมให้คลาดเคลื่อนได้ ±0.5 แล้วบอกว่าช่องไหนตรง ช่องไหนไม่ตรง พร้อมเหตุผลและตำแหน่งเซลล์ ทุกอย่างทำงานในเครื่องคุณเอง ไม่มีการส่งไฟล์ออกไปไหน</p>
+
+  <div class="drop" id="drop" tabindex="0" role="button">
+    <b>ลากไฟล์มาวางที่นี่ หรือคลิกเพื่อเลือกไฟล์</b>
+    <small>รองรับ .xls .xlsx .xlsm — เลือกได้หลายไฟล์พร้อมกัน</small>
+  </div>
+  <input type="file" id="file" accept=".xls,.xlsx,.xlsm" multiple>
+
+  <div id="tabs" class="tabs"></div>
+  <div id="panel"></div>
+  <footer id="foot" class="hide"></footer>
+</div>
+
+<script>/* ===== เอนจินตรวจรายงานจับตัวเลข ===== */
+(function(root){
+const VALKEYS=['ผลัดเช้า','ผลัดบ่าย','ผลัดดึก','รวมทั้งวัน','%สัดส่วน'];
+const EPS=0.5, PEPS=0.0015;   // จำนวนนับคลาดเคลื่อนได้ ±0.5
+
+const S=v=>v===null||v===undefined?'':String(v).trim();
+const isNum=v=>typeof v==='number'&&isFinite(v);
+function num(v){ if(isNum(v))return v; const t=S(v).replace(/,/g,''); if(t===''||!/^-?\d*\.?\d+$/.test(t))return null; return parseFloat(t);}
+const fmt=n=>n===null?'-':Number(n.toFixed(4)).toLocaleString('en-US');
+const pct=n=>(n*100).toFixed(2)+'%';
+const A1=(r,c)=>colName(c)+(r+1);
+function colName(c){let s='';c++;while(c>0){const m=(c-1)%26;s=String.fromCharCode(65+m)+s;c=(c-m-1)/26;}return s;}
+const near=(a,b,e)=>Math.abs(a-b)<=(e||EPS);
+
+function fillMap(ws){
+  const m={};const ref=ws['!ref'];if(!ref)return m;
+  const R=XLSX.utils.decode_range(ref);
+  for(let r=R.s.r;r<=R.e.r;r++)for(let c=R.s.c;c<=R.e.c;c++){
+    const cell=ws[XLSX.utils.encode_cell({r,c})];
+    if(!cell||!cell.s)continue;
+    const st=cell.s;
+    if(!st.patternType||st.patternType==='none')continue;
+    const rgb=(st.fgColor&&st.fgColor.rgb)||'';
+    if(!rgb||/^FFFFFF$/i.test(rgb))continue;
+    m[A1(r,c)]=rgb.toUpperCase();
+  }
+  return m;
+}
+function errCells(ws){
+  const out=[];
+  const ref=ws['!ref']; if(!ref)return out;
+  const R=XLSX.utils.decode_range(ref);
+  for(let r=R.s.r;r<=R.e.r;r++)for(let c=R.s.c;c<=R.e.c;c++){
+    const cell=ws[XLSX.utils.encode_cell({r,c})];
+    if(cell&&cell.t==='e') out.push({r,c,w:cell.w||'#ERROR'});
+  }
+  return out;
+}
+function grid(ws){
+  const g=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true,blankrows:true});
+  const w=g.reduce((m,r)=>Math.max(m,r.length),0);
+  return g.map(r=>{const a=r.slice();while(a.length<w)a.push(null);return a;});
+}
+
+/* ---- อ่านโครงตาราง data ---- */
+function parseData(g){
+  const out={meta:[],groups:[],rows:[],hRow:-1,subRow:-1};
+  // metadata: ช่องซ้ายลงท้ายด้วย :
+  for(let r=0;r<Math.min(g.length,20);r++){
+    const lab=S(g[r][0]);
+    if(lab.endsWith(':')){
+      let val='',vc=-1;
+      for(let c=1;c<g[r].length;c++){ if(S(g[r][c])!==''){val=S(g[r][c]);vc=c;break;} }
+      out.meta.push({row:r,col:vc<0?1:vc,label:lab.replace(/\s*:$/,''),value:val});
+      // คู่ที่สองของบรรทัดเดียวกัน (เช่น บันทึกเลขที่ :)
+      let seen=false;
+      for(let c=1;c<g[r].length;c++){
+        const t=S(g[r][c]);
+        if(t.endsWith(':')&&t.length>1){
+          let v2='',v2c=-1;
+          for(let d=c+1;d<g[r].length;d++){ if(S(g[r][d])!==''){v2=S(g[r][d]);v2c=d;break;} }
+          out.meta.push({row:r,col:v2c<0?c+1:v2c,label:t.replace(/\s*:$/,''),value:v2});
+          seen=true;break;
+        }
+      }
+      void seen;
+    }
+  }
+  // หาแถวหัวตาราง
+  for(let r=0;r<g.length;r++){
+    if(g[r].some(v=>S(v)==='หัวข้อ')){out.hRow=r;break;}
+  }
+  if(out.hRow<0) return out;
+  // แถวย่อยที่มีคีย์ค่า
+  for(let r=out.hRow;r<Math.min(out.hRow+3,g.length);r++){
+    if(g[r].some(v=>VALKEYS.includes(S(v)))){out.subRow=r;break;}
+  }
+  if(out.subRow<0) return out;
+
+  // คอลัมน์ค่า
+  const valCols=[];
+  g[out.subRow].forEach((v,c)=>{ if(VALKEYS.includes(S(v))) valCols.push({col:c,key:S(v)}); });
+  if(!valCols.length) return out;
+
+  // จัดกลุ่มคอลัมน์ที่ติดกัน
+  const groups=[];let cur=null;
+  valCols.forEach(vc=>{
+    if(cur&&vc.col===cur.end+1&&!cur.keys.some(k=>k.key===vc.key)){cur.end=vc.col;cur.keys.push(vc);}
+    else{cur={start:vc.col,end:vc.col,keys:[vc]};groups.push(cur);}
+  });
+  // ชื่อหัวข้อกลุ่ม + ขอบเขตคอลัมน์ป้ายกำกับ
+  let prevEnd=-1;
+  groups.forEach(gr=>{
+    let title='';
+    for(let c=gr.start;c>=Math.max(prevEnd+1,0);c--){ const t=S(g[out.hRow][c]); if(t&&t!=='หัวข้อ'){title=t;break;} }
+    gr.title=title||'ผลรวม';
+    const labStart=prevEnd+1, labEnd=gr.start-1;
+    gr.labelCols = labEnd>=labStart ? [labStart,labEnd] : null;
+    prevEnd=gr.end;
+  });
+  let lastLab=null;
+  groups.forEach(gr=>{ if(gr.labelCols) lastLab=gr.labelCols; else gr.labelCols=lastLab; });
+  out.groups=groups;
+
+  // แถวข้อมูล: จัดตารางตามชุดคอลัมน์ป้ายกำกับ (รองรับตารางวางคู่กัน)
+  const tables=[];
+  groups.forEach(gr=>{
+    const key=gr.labelCols?gr.labelCols.join('-'):'x';
+    let t=tables.find(t=>t.key===key);
+    if(!t){t={key,labelCols:gr.labelCols,groups:[],rows:[]};tables.push(t);}
+    t.groups.push(gr);
+  });
+  tables.forEach(t=>{
+    const [ls,le]=t.labelCols||[0,0];
+    // คอลัมน์ที่มีการใช้จริงในเขตป้ายกำกับ
+    const used=[];
+    for(let c=ls;c<=le;c++){
+      for(let r=out.subRow+1;r<g.length;r++){ if(S(g[r][c])!==''){used.push(c);break;} }
+    }
+    if(!used.length) return;
+    const blockCol=used[0];
+    const carry={};
+    for(let r=out.subRow+1;r<g.length;r++){
+      const ne=used.map(c=>({c,v:S(g[r][c])})).filter(o=>o.v!=='');
+      const hasVal=t.groups.some(gr=>gr.keys.some(k=>num(g[r][k.col])!==null));
+      ne.forEach(o=>{ carry[o.c]=o.v; used.forEach(c=>{ if(c>o.c) carry[c]=''; }); });
+      if(!ne.length&&!hasVal) continue;
+      if(!ne.length) continue;
+      const last=ne[ne.length-1];
+      const block=carry[blockCol]||'';
+      const isTotal=/ยอดรวม|ยอดรวมทั้งหมด/.test(last.v);
+      let item=last.v, sub='';
+      if(last.c!==blockCol){
+        const mids=used.filter(c=>c>blockCol&&c<last.c);
+        for(let i=mids.length-1;i>=0;i--){ if(carry[mids[i]]){sub=carry[mids[i]];break;} }
+      }
+      if(isTotal) sub='';
+      if(last.c===blockCol&&!hasVal) continue; // แถวหัวบล็อกอย่างเดียว
+      t.rows.push({r,block,sub,item,isTotal,labelCol:last.c});
+    }
+  });
+  out.tables=tables;
+  return out;
+}
+
+/* ---- ตรวจชีต data ---- */
+function checkData(g,name,issues,ok,fills){
+  const D=parseData(g);
+  const add=(sev,r,c,title,detail)=>issues.push({sheet:name,cell:r>=0?A1(r,c):'',row:r+1,sev,title,detail});
+  const pass=(t)=>ok.push({sheet:name,title:t});
+  const seen={};const okOnce=t=>{if(!seen[t]){seen[t]=1;pass(t);}};
+
+  // 1) ข้อมูลหัวรายงาน
+  D.meta.forEach(m=>{
+    if(m.value===''){ add('bad',m.row,m.col,'ข้อมูลหัวรายงานว่าง','"'+m.label+'" ยังไม่ได้กรอก'); return; }
+    if(/[…]|\.{5,}/.test(m.value)) add('warn',m.row,m.col,'ยังไม่ได้เติมข้อความ','"'+m.label+'" ยังเป็นจุดไข่ปลาในแบบฟอร์ม');
+    if(/ที่ตั้ง/.test(m.label)&&!/-?\d{1,3}\.\d{3,}\s*,\s*-?\d{1,3}\.\d{3,}/.test(m.value))
+      add('warn',m.row,m.col,'ไม่พบพิกัดละติจูด/ลองจิจูด','"'+m.label+'" ควรมีพิกัดตัวเลข เช่น 13.9176, 100.4531');
+  });
+  if(D.meta.length&&!D.meta.some(m=>m.value==='')) pass('ข้อมูลหัวรายงานกรอกครบ '+D.meta.length+' ช่อง');
+
+  if(!D.tables||!D.tables.length){ add('bad',-1,0,'ไม่พบตารางสรุปผล','หาแถวหัวตาราง "หัวข้อ" ไม่เจอ จึงตรวจตัวเลขในชีตนี้ไม่ได้'); return D; }
+
+  const allNums=[];
+  D.tables.forEach(t=>{
+    t.groups.forEach(gr=>{
+      const keyCol={}; gr.keys.forEach(k=>keyCol[k.key]=k.col);
+      const shifts=['ผลัดเช้า','ผลัดบ่าย','ผลัดดึก'].filter(k=>keyCol[k]!==undefined);
+
+      // 2) ผลัด รวมกันต้องเท่ารวมทั้งวัน
+      if(shifts.length&&keyCol['รวมทั้งวัน']!==undefined){
+        let n=0,bad=0;
+        t.rows.forEach(row=>{
+          const parts=shifts.map(k=>num(g[row.r][keyCol[k]]));
+          const tot=num(g[row.r][keyCol['รวมทั้งวัน']]);
+          if(tot===null||parts.some(p=>p===null))return;
+          n++;
+          const s=parts.reduce((a,b)=>a+b,0);
+          if(!near(s,tot)){bad++;add('bad',row.r,keyCol['รวมทั้งวัน'],'ผลรวมผลัดไม่ตรง',
+            `${gr.title} · ${row.block} ${row.item} : ${shifts.map((k,i)=>fmt(parts[i])).join(' + ')} = ${fmt(s)} แต่ช่องรวมทั้งวันใส่ ${fmt(tot)}`);}
+        });
+        if(n&&!bad) pass(`${gr.title}: ผลัดเช้า+บ่าย+ดึก = รวมทั้งวัน ครบ ${n} แถว`);
+      }
+
+      // 3) ผลรวมกลุ่มย่อย = ยอดรวมของบล็อก
+      const totals={};
+      t.rows.filter(r=>r.isTotal).forEach(r=>{ totals[r.block]=r; });
+      const bySub={};
+      t.rows.filter(r=>!r.isTotal&&r.sub).forEach(r=>{ const k=r.block+'|'+r.sub; (bySub[k]=bySub[k]||[]).push(r); });
+      Object.keys(bySub).forEach(k=>{
+        const [blk,sub]=k.split('|'); const tot=totals[blk]; if(!tot)return;
+        Object.keys(keyCol).forEach(key=>{
+          if(key==='%สัดส่วน')return;
+          const tv=num(g[tot.r][keyCol[key]]); if(tv===null)return;
+          const parts=bySub[k].map(r=>num(g[r.r][keyCol[key]])).filter(v=>v!==null);
+          if(parts.length<2)return;
+          const s=parts.reduce((a,b)=>a+b,0);
+          if(!near(s,tv,EPS))
+            add('bad',tot.r,keyCol[key],'ยอดรวมกลุ่มไม่ตรง',
+              `${gr.title} · ${blk} → ${sub} (${key}) : รวมรายการย่อยได้ ${fmt(s)} แต่ช่องยอดรวมใส่ ${fmt(tv)} (ต่าง ${fmt(s-tv)})`);
+        });
+        // 4) %สัดส่วน
+        if(keyCol['%สัดส่วน']!==undefined&&keyCol['รวมทั้งวัน']!==undefined){
+          const base=bySub[k].map(r=>num(g[r.r][keyCol['รวมทั้งวัน']])).filter(v=>v!==null).reduce((a,b)=>a+b,0);
+          bySub[k].forEach(r=>{
+            const v=num(g[r.r][keyCol['รวมทั้งวัน']]), p=num(g[r.r][keyCol['%สัดส่วน']]);
+            if(v===null||p===null||!base)return;
+            if(!near(p,v/base,PEPS))
+              add('warn',r.r,keyCol['%สัดส่วน'],'%สัดส่วนไม่ตรง',
+                `${gr.title} · ${blk} ${r.item} : ${fmt(v)}/${fmt(base)} ควรเป็น ${(v/base*100).toFixed(2)}% แต่ใส่ ${(p*100).toFixed(2)}%`);
+          });
+        }
+      });
+
+      // 5) บล็อก "ทั้งหมด" = ผลรวมทุกบล็อกย่อย
+      const grand=Object.keys(totals).find(b=>/ทั้งหมด/.test(b));
+      if(grand){
+        const others=Object.keys(totals).filter(b=>b!==grand&&!/^\s*$/.test(b));
+        const items={};
+        t.rows.filter(r=>!r.isTotal&&r.block!==grand&&others.includes(r.block)).forEach(r=>{(items[r.item]=items[r.item]||[]).push(r);});
+        t.rows.filter(r=>!r.isTotal&&r.block===grand).forEach(gr2=>{
+          const src=items[gr2.item]; if(!src||src.length<2)return;
+          Object.keys(keyCol).forEach(key=>{
+            if(key==='%สัดส่วน')return;
+            const gv=num(g[gr2.r][keyCol[key]]); if(gv===null)return;
+            const s=src.map(r=>num(g[r.r][keyCol[key]])).filter(v=>v!==null).reduce((a,b)=>a+b,0);
+            if(!near(s,gv,EPS))
+              add('bad',gr2.r,keyCol[key],'ยอดรวมใหญ่ไม่ตรง',
+                `${gr.title} · ${grand} ${gr2.item} (${key}) : รวมจากทุกจุดได้ ${fmt(s)} แต่ใส่ ${fmt(gv)}`);
+          });
+        });
+      }
+
+      // 5b) ยอดรวมใหญ่ของคน/รถ = ผลรวมยอดรวมย่อยที่ใช้สีเดียวกัน
+      const totRows=t.rows.filter(r=>r.isTotal);
+      if(fills&&totRows.length>=2){
+        const kinds={};
+        totRows.forEach(r=>{
+          const kind=/คน/.test(r.item)?'คน':(/รถ/.test(r.item)?'รถ':'อื่น');
+          const col=fills[A1(r.r,r.labelCol)]||'';
+          (kinds[kind]=kinds[kind]||[]).push({row:r,color:col});
+        });
+        Object.keys(kinds).forEach(kind=>{
+          const list=kinds[kind]; if(list.length<2)return;
+          const byColor={}; list.forEach(o=>{(byColor[o.color]=byColor[o.color]||[]).push(o);});
+          const cols=Object.keys(byColor);
+          const grandColor=cols.find(c=>byColor[c].length===1&&cols.some(o=>o!==c&&byColor[o].length>1));
+          if(!grandColor)return;
+          const grandRow=byColor[grandColor][0].row;
+          const parts=list.filter(o=>o.color!==grandColor).map(o=>o.row);
+          if(parts.length<2)return;
+          Object.keys(keyCol).forEach(key=>{
+            if(key==='%สัดส่วน')return;
+            const gv=num(g[grandRow.r][keyCol[key]]); if(gv===null)return;
+            const vals=parts.map(r=>num(g[r.r][keyCol[key]])).filter(v=>v!==null);
+            if(vals.length<2)return;
+            const s2=vals.reduce((a,b)=>a+b,0);
+            if(!near(s2,gv,EPS))
+              add('bad',grandRow.r,keyCol[key],'ยอดรวม'+kind+'ทั้งหมดไม่ตรง',
+                `${gr.title} (${key}) : รวมยอดของทุกจุด (${vals.map(fmt).join(' + ')}) = ${fmt(s2)} แต่ช่องยอดรวมใส่ ${fmt(gv)} — ต่าง ${fmt(s2-gv)}`);
+            else okOnce('ยอดรวม'+kind+'ทั้งหมด ('+gr.title+' · '+key+') ตรงกับผลรวมทุกจุด: '+fmt(gv));
+          });
+        });
+      }
+
+      // เก็บตัวเลขไว้เทียบข้ามชีต + ตรวจค่าติดลบ
+      t.rows.forEach(row=>{
+        Object.keys(keyCol).forEach(key=>{
+          const v=num(g[row.r][keyCol[key]]);
+          if(v===null)return;
+          allNums.push(v);
+          if(v<0) add('bad',row.r,keyCol[key],'ค่าติดลบ',`${gr.title} · ${row.block} ${row.item} (${key}) = ${fmt(v)}`);
+        });
+      });
+    });
+
+    // 6) ค่าเฉลี่ยของสองวัน
+    const dayGroups=t.groups.filter(gr=>/วัน/.test(gr.title));
+    const avgGroup=t.groups.find(gr=>/เฉลี่ย/.test(gr.title));
+    if(avgGroup&&dayGroups.length>=2){
+      let n=0,bad=0;
+      const kc=k=>{const o=avgGroup.keys.find(x=>x.key===k);return o?o.col:undefined;};
+      avgGroup.keys.forEach(k=>{
+        if(k.key==='%สัดส่วน')return;
+        t.rows.forEach(row=>{
+          const av=num(g[row.r][k.col]); if(av===null)return;
+          const vals=dayGroups.map(dg=>{const o=dg.keys.find(x=>x.key===k.key);return o?num(g[row.r][o.col]):null;});
+          if(vals.some(v=>v===null))return;
+          n++;
+          const m=vals.reduce((a,b)=>a+b,0)/vals.length;
+          if(!near(m,av,EPS)){bad++;
+            add('bad',row.r,k.col,'ค่าเฉลี่ยไม่ตรง',`${row.block} ${row.item} (${k.key}) : เฉลี่ยจาก ${vals.map(fmt).join(', ')} ควรเป็น ${fmt(m)} แต่ใส่ ${fmt(av)}`);}
+        });
+      });
+      void kc;
+      if(n&&!bad) pass(`คอลัมน์เฉลี่ยคำนวณถูกต้องครบ ${n} ช่อง`);
+    }
+  });
+
+  D.allNums=allNums;
+  return D;
+}
+
+/* ---- ตรวจชีตสรุป/รายชั่วโมง เทียบกับ data ---- */
+function checkAgainstData(g,name,base,issues,ok){
+  const arr=base.slice().sort((a,b)=>a-b);
+  const set={has:x=>{const v=parseFloat(x);return arr.some(b=>Math.abs(b-v)<=EPS);}};
+  const add=(sev,r,c,title,detail)=>issues.push({sheet:name,cell:A1(r,c),row:r+1,sev,title,detail});
+  let checked=0,bad=0;
+  for(let r=0;r<g.length;r++){
+    for(let c=0;c<g[r].length;c++){
+      const raw=g[r][c];
+      const v=isNum(raw)?raw:null;
+      if(v===null)continue;
+      if(Math.abs(v)<2)continue;              // ข้าม 0/1 และค่าเปอร์เซ็นต์
+      if(v>2500000&&v<2600000)continue;       // ข้ามเลขวันที่แบบ serial
+      checked++;
+      if(!set.has(v.toFixed(4))){
+        bad++;
+        add('bad',r,c,'ตัวเลขไม่ตรงกับชีต data',`ค่า ${fmt(v)} ในชีตนี้ ไม่มีอยู่ในตารางสรุปผลของชีต data — อาจเป็นตัวเลขค้างจากงานเดิมหรือคำนวณคนละฐาน`);
+      }
+    }
+    // ตัวเลขที่ฝังในข้อความสรุป
+    for(let c=0;c<g[r].length;c++){
+      const t=S(g[r][c]); if(t.length<6||isNum(g[r][c]))continue;
+      if(/[…]|\.{5,}/.test(t)) add('warn',r,c,'ยังไม่ได้เติมข้อความ','ข้อความสรุปยังเป็นจุดไข่ปลา: "'+t.slice(0,60)+'"');
+      const nums=t.match(/\d[\d,]*\.?\d*/g)||[];
+      nums.forEach(ns=>{
+        const v=parseFloat(ns.replace(/,/g,''));
+        if(!isFinite(v)||v<100)return;
+        if(/%/.test(t)&&t.indexOf(ns+'%')>=0){
+          if(!set.has((v/100).toFixed(4))) add('warn',r,c,'ตัวเลขในข้อความไม่ตรง',`ข้อความระบุ ${ns}% แต่ไม่พบสัดส่วนนี้ในชีต data`);
+          return;
+        }
+        if(v>2500&&v<2600)return;              // พ.ศ.
+        if(!set.has(v.toFixed(4))) add('bad',r,c,'ตัวเลขในข้อความไม่ตรง',`ข้อความสรุประบุ ${ns} แต่ไม่พบตัวเลขนี้ในชีต data — ตรวจว่าคัดลอกยอดมาถูกหรือไม่`);
+      });
+    }
+  }
+  if(checked&&!bad) ok.push({sheet:name,title:`ตัวเลข ${checked} ค่าตรงกับชีต data ทั้งหมด`});
+  return checked;
+}
+
+function checkHourly(g,name,baseArr,issues,ok){
+  const baseHas=v=>baseArr.some(b=>Math.abs(b-v)<=EPS);
+  // หาแถวหัวตารางรายชั่วโมง
+  let hr=-1;
+  for(let r=0;r<g.length;r++){ if(g[r].some(v=>/ช่วงเวลา/.test(S(v)))){hr=r;break;} }
+  if(hr<0) return false;
+  const isHour=v=>/^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/.test(S(v));
+  const labCol=g[hr].findIndex(v=>/ช่วงเวลา/.test(S(v)));
+  const hourRows=[],totRows=[],shiftRows=[];
+  for(let r=hr+1;r<g.length;r++){
+    const lab=S(g[r][labCol]);
+    if(isHour(lab)) hourRows.push(r);
+    else if(/^รวม/.test(lab)) totRows.push(r);
+    else if(/ผลัด/.test(lab)) shiftRows.push(r);
+  }
+  if(!hourRows.length||!totRows.length) return false;
+  const add=(sev,r,c,title,detail)=>issues.push({sheet:name,cell:A1(r,c),row:r+1,sev,title,detail});
+  const width=g[hr].length;
+  let cols=0,bad=0;
+  for(let c=labCol+1;c<width;c++){
+    const sum=hourRows.map(r=>num(g[r][c])).filter(v=>v!==null).reduce((a,b)=>a+b,0);
+    const tot=totRows.map(r=>num(g[r][c])).filter(v=>v!==null).reduce((a,b)=>a+b,0);
+    const hasAny=hourRows.some(r=>num(g[r][c])!==null)||totRows.some(r=>num(g[r][c])!==null);
+    if(!hasAny)continue;
+    cols++;
+    const head=S(g[hr][c])||S(g[hr-1]&&g[hr-1][c])||colName(c);
+    if(!near(sum,tot,EPS)){
+      bad++;
+      add('bad',totRows[totRows.length-1],c,'ยอดรวมรายชั่วโมงไม่ตรง',
+        `คอลัมน์ "${head}" : รวมทุกช่วงเวลาได้ ${fmt(sum)} แต่แถวรวมใส่ ${fmt(tot)} (ต่าง ${fmt(sum-tot)})`);
+    }
+    if(shiftRows.length){
+      const sh=shiftRows.map(r=>num(g[r][c])).filter(v=>v!==null).reduce((a,b)=>a+b,0);
+      if(shiftRows.some(r=>num(g[r][c])!==null)&&!near(sh,tot,EPS))
+        add('warn',shiftRows[shiftRows.length-1],c,'ยอดรวมผลัดไม่ตรง',`คอลัมน์ "${head}" : รวมทุกผลัดได้ ${fmt(sh)} แต่แถวรวมใส่ ${fmt(tot)}`);
+    }
+    // แถวรวมต้องมีอยู่ในชีต data
+    totRows.forEach(r=>{
+      const v=num(g[r][c]);
+      if(v===null||Math.abs(v)<2)return;
+      if(!baseHas(v))
+        add('warn',r,c,'ยอดรวมไม่พบในชีต data',`คอลัมน์ "${head}" ยอดรวม ${fmt(v)} ไม่ปรากฏในตารางสรุปผลของชีต data`);
+    });
+  }
+  if(cols&&!bad) ok.push({sheet:name,title:`ตารางรายชั่วโมงรวมยอดตรงครบ ${cols} คอลัมน์`});
+  return true;
+}
+
+function checkTitles(g,name,ctx,issues){
+  const add=(sev,r,c,title,detail)=>issues.push({sheet:name,cell:A1(r,c),row:r+1,sev,title,detail});
+  const norm=t=>S(t).replace(/[\s()（）]/g,'');
+  for(let r=0;r<Math.min(g.length,6);r++)for(let c=0;c<g[r].length;c++){
+    const t=S(g[r][c]); if(t.length<10)continue;
+    if(/ทำเลเป้าหมาย|ตารางสรุปผล|แผนที่/.test(t)&&ctx.site){
+      const key=norm(ctx.site).slice(0,10);
+      if(key.length>=4&&norm(t).indexOf(key)<0)
+        add('bad',r,c,'ชื่อทำเลในหัวเรื่องไม่ตรง',`หัวเรื่องเขียนว่า "${t.slice(0,60)}" แต่ชีต data ระบุทำเลว่า "${ctx.site}"`);
+    }
+    const years=(/วัน|เดือน|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม/.test(t)?(t.match(/(^|[^\d.])(25\d{2})([^\d.]|$)/g)||[]).map(x=>x.match(/25\d{2}/)[0]):[]);
+    years.forEach(y=>{ if(ctx.year&&y!==ctx.year) add('bad',r,c,'ปี พ.ศ. ไม่ตรง',`ข้อความระบุปี ${y} แต่วันที่จับตัวเลขในชีต data เป็นปี ${ctx.year}`); });
+    if(/^จับตัวเลขวัน/.test(t)&&ctx.days.length){
+      const d=(t.match(/ที่\s*(\d{1,2})/g)||[]).map(x=>x.replace(/\D/g,''));
+      if(d.length&&(d.length!==ctx.days.length||d.some(x=>ctx.days.indexOf(x)<0)))
+        add('bad',r,c,'วันที่จับตัวเลขไม่ตรง',`ชีตนี้ระบุวันที่ ${d.join(', ')} แต่ชีต data ระบุวันที่ ${ctx.days.join(', ')}`);
+    }
+  }
+}
+
+function auditWorkbook(wb){
+  const meta=(wb.Workbook&&wb.Workbook.Sheets)||[];
+  const rep={sheets:[],issues:[],ok:[],skipped:[]};
+  const grids={},errs={},fills={};
+  wb.SheetNames.forEach((n,i)=>{
+    const h=meta[i]?meta[i].Hidden:0;
+    if(h===1||h===2){rep.skipped.push({name:n,reason:h===2?'ซ่อนสนิท (very hidden)':'ซ่อนไว้'});return;}
+    if(/^\s*สรุป\s*\(?\s*2\s*\)?\s*$/.test(n)){rep.skipped.push({name:n,reason:'ตั้งค่าไม่ต้องตรวจ'});return;}
+    grids[n]=grid(wb.Sheets[n]);
+    errs[n]=errCells(wb.Sheets[n]);
+    fills[n]=fillMap(wb.Sheets[n]);
+  });
+  const names=Object.keys(grids);
+  const dataName=names.find(n=>/^data$/i.test(n))||names.find(n=>grids[n].some(r=>r.some(v=>S(v)==='หัวข้อ')));
+  let D=null,ctx={site:'',year:'',days:[]};
+  if(dataName){
+    D=checkData(grids[dataName],dataName,rep.issues,rep.ok,fills[dataName]);
+    (D.meta||[]).forEach(m=>{
+      if(/ชื่อ\s*SITE/i.test(m.label)) ctx.site=m.value.replace(/\(.*$/,'').trim();
+      if(/จับตัวเลขวันที่/.test(m.label)){
+        const y=m.value.match(/25\d{2}/); if(y)ctx.year=y[0];
+        const d=m.value.match(/ที่\s*(\d{1,2})/); if(d)ctx.days.push(d[1]);
+      }
+    });
+  } else rep.issues.push({sheet:'-',cell:'',sev:'bad',title:'ไม่พบชีต data',detail:'ไฟล์นี้ไม่มีชีตข้อมูลหลักให้ใช้เป็นฐานเทียบ'});
+
+  const base=(D&&D.allNums)||[];
+  names.forEach(n=>{
+    // เซลล์สูตรผิดพลาด
+    errs[n].forEach(e=>rep.issues.push({sheet:n,cell:A1(e.r,e.c),row:e.r+1,sev:'bad',title:'สูตรคำนวณผิดพลาด',detail:`เซลล์แสดงค่า ${e.w} — สูตรอ้างอิงเซลล์ที่ถูกลบหรือหารด้วยศูนย์`}));
+    checkTitles(grids[n],n,ctx,rep.issues);
+    if(n===dataName)return;
+    const g=grids[n];
+    if(!g.some(r=>r.some(v=>isNum(v)))){rep.sheets.push({name:n,note:'ไม่มีตัวเลขให้ตรวจ'});return;}
+    if(checkHourly(g,n,base,rep.issues,rep.ok))return;
+    if(/สรุป/.test(n)&&D) checkAgainstData(g,n,D.allNums,rep.issues,rep.ok);
+  });
+  // ตรวจเฉพาะช่องที่ใส่สีไว้ในไฟล์
+  rep.issues=rep.issues.filter(i=>!i.cell||!fills[i.sheet]||fills[i.sheet][i.cell]);
+  rep.dataName=dataName;rep.visible=names;rep.grids=grids;rep.fills=fills;rep.ctx=ctx;
+  return rep;
+}
+
+root.auditWorkbook=auditWorkbook;
+root.__fmt=fmt; root.__A1=A1;
+})(typeof window!=='undefined'?window:global);
+
+</script>
+<script>
+const $=s=>document.querySelector(s);
+const FILES=[]; let ACTIVE=0;
+const drop=$('#drop'),fileInput=$('#file');
+drop.onclick=()=>fileInput.click();
+drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();fileInput.click();}};
+['dragenter','dragover'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',e=>handle(e.dataTransfer.files));
+fileInput.onchange=e=>handle(e.target.files);
+
+function handle(list){
+  [...list].forEach(f=>{
+    const r=new FileReader();
+    r.onload=ev=>{
+      let rep=null,err=null;
+      try{ rep=auditWorkbook(XLSX.read(new Uint8Array(ev.target.result),{type:'array',cellDates:false,cellStyles:true})); }
+      catch(e){ err=e.message||'อ่านไฟล์ไม่สำเร็จ'; }
+      FILES.push({name:f.name,rep,err});
+      ACTIVE=FILES.length-1; draw();
+    };
+    r.readAsArrayBuffer(f);
+  });
+}
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function draw(){
+  $('#tabs').innerHTML=FILES.map((f,i)=>{
+    const n=f.rep?f.rep.issues.filter(x=>x.sev==='bad').length:0;
+    return `<button class="tab ${i===ACTIVE?'on':''}" onclick="ACTIVE=${i};draw()">${esc(f.name)} ${f.err?'⚠':(n?'· '+n+' จุด':'· ผ่าน')}</button>`;
+  }).join('');
+  const F=FILES[ACTIVE]; if(!F)return;
+  if(F.err){$('#panel').innerHTML=`<div class="card"><b style="color:var(--bad)">อ่านไฟล์นี้ไม่ได้</b><div class="meta">${esc(F.err)} — ลองเปิดใน Excel แล้วบันทึกใหม่เป็น .xlsx</div></div>`;return;}
+  const R=F.rep;
+  const bads=R.issues.filter(i=>i.sev==='bad'), warns=R.issues.filter(i=>i.sev==='warn');
+  const ctx=R.ctx||{};
+  // จัดกลุ่มตามประเภทปัญหา
+  const groups={};
+  R.issues.forEach(i=>{(groups[i.title]=groups[i.title]||[]).push(i);});
+  const gkeys=Object.keys(groups).sort((a,b)=>{
+    const sa=groups[a][0].sev==='bad'?0:1, sb=groups[b][0].sev==='bad'?0:1;
+    return sa-sb||groups[b].length-groups[a].length;
+  });
+
+  $('#panel').innerHTML=`
+  <div class="card">
+    <div class="head">
+      <div><h2>${esc(ctx.site||F.name)}</h2>
+        <div class="meta">${esc(R.dataName?'ชีตข้อมูลหลัก: '+R.dataName:'ไม่พบชีต data')} · ตรวจ ${R.visible.length} ชีต · ข้ามชีตที่ซ่อน ${R.skipped.length} ชีต${ctx.year?' · ปี '+ctx.year:''}</div></div>
+      <button class="btn ghost" onclick="expo()">บันทึกผลตรวจเป็น CSV</button>
+    </div>
+    <div class="stats">
+      <div class="stat bad"><div class="n">${bads.length}</div><div class="l">ต้องแก้</div></div>
+      <div class="stat warn"><div class="n">${warns.length}</div><div class="l">ควรตรวจซ้ำ</div></div>
+      <div class="stat ok"><div class="n">${R.ok.length}</div><div class="l">รายการที่ผ่าน</div></div>
+      <div class="stat"><div class="n">${R.skipped.length}</div><div class="l">ชีตซ่อน (ไม่ตรวจ)</div></div>
+    </div>
+    ${R.skipped.length?`<div class="meta" style="margin-top:10px">ชีตที่ข้าม: ${R.skipped.map(s=>esc(s.name)+' ('+esc(s.reason)+')').join(' · ')}</div>`:''}
+  </div>
+
+  ${gkeys.length?gkeys.map(k=>{
+    const g=groups[k],sev=g[0].sev;
+    return `<details class="grp" ${sev==='bad'?'open':''}>
+      <summary><span class="gt">${esc(k)}</span><span class="badge ${sev}">${g.length} จุด</span>
+      <span class="badge mute">${[...new Set(g.map(x=>x.sheet))].map(esc).join(' · ')}</span></summary>
+      <div class="rows">${g.slice(0,60).map(i=>
+        `<div class="row"><span class="loc" onclick="jump('${esc(i.sheet)}','${i.cell}')">${esc(i.sheet)}!${i.cell||'-'}</span><span class="d">${esc(i.detail)}</span></div>`
+      ).join('')}${g.length>60?`<div class="row"><span class="d">…และอีก ${g.length-60} จุด ดูได้จากไฟล์ CSV</span></div>`:''}</div>
+    </details>`;
+  }).join(''):`<div class="card"><span class="badge ok">ไม่พบข้อผิดพลาด</span> ไฟล์นี้ผ่านทุกเกณฑ์ที่ตรวจ</div>`}
+
+  ${R.ok.length?`<details class="grp"><summary><span class="gt">รายการที่ตรวจแล้วถูกต้อง</span><span class="badge ok">${R.ok.length}</span></summary>
+    <div class="rows">${R.ok.map(o=>`<div class="okline">✓ ${esc(o.sheet)} — ${esc(o.title)}</div>`).join('')}</div></details>`:''}
+
+  <div class="card">
+    <div class="head"><h2>ดูข้อมูลในชีต</h2><div class="meta">ช่องที่มีปัญหาจะถูกไฮไลต์</div></div>
+    <div class="sheetsel" id="ss">${R.visible.map((n,i)=>`<button class="${i===0?'on':''}" onclick="showSheet('${esc(n)}',this)">${esc(n)}</button>`).join('')}</div>
+    <div id="sheetview"></div>
+  </div>`;
+  $('#foot').classList.remove('hide');
+  $('#foot').textContent='เกณฑ์ที่ใช้ตรวจ (เฉพาะช่องที่ใส่สี คลาดเคลื่อนได้ ±0.5): ยอดรวมคน/รถทั้งหมด = ผลรวมยอดรวมของทุกจุด · ผลัดเช้า+บ่าย+ดึก = รวมทั้งวัน · ผลรวมกลุ่มย่อย = ยอดรวม · %สัดส่วนตรงกับฐาน · คอลัมน์เฉลี่ยของสองวัน · บล็อกรถทั้งหมด = ผลรวมทุกจุด · ตารางรายชั่วโมงรวมยอดตรง · ตัวเลขในชีตสรุปต้องมาจากชีต data · ชื่อทำเล วันที่ และปีตรงกันทุกชีต · เซลล์สูตรผิดพลาด';
+  showSheet(R.visible[0],document.querySelector('#ss button'));
+}
+
+function showSheet(name,btn){
+  const R=FILES[ACTIVE].rep, g=R.grids[name]||[];
+  document.querySelectorAll('#ss button').forEach(b=>b.classList.remove('on'));
+  if(btn)btn.classList.add('on');
+  const flags={};
+  R.issues.filter(i=>i.sheet===name&&i.cell).forEach(i=>{flags[i.cell]={sev:i.sev,msg:i.detail};});
+  const w=Math.min(g.reduce((m,r)=>Math.max(m,r.length),0),40);
+  const head='<tr><th>#</th>'+Array.from({length:w},(_,c)=>`<th>${colLabel(c)}</th>`).join('')+'</tr>';
+  const body=g.slice(0,200).map((r,ri)=>'<tr><td class="rn">'+(ri+1)+'</td>'+Array.from({length:w},(_,c)=>{
+    const v=r[c], a=colLabel(c)+(ri+1), f=flags[a];
+    const isN=typeof v==='number';
+    const disp=v===null||v===undefined?'':(isN?Number(v.toFixed(4)).toLocaleString('en-US'):String(v));
+    return `<td id="c-${a}" class="${f?'f-'+f.sev+' ':''}${isN?'num':''}" ${f?`title="${esc(f.msg)}"`:''}>${esc(disp.slice(0,60))}</td>`;
+  }).join('')+'</tr>').join('');
+  document.getElementById('sheetview').innerHTML=`<div class="tblbox" id="tb"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`
+    +(g.length>200?'<div class="meta" style="margin-top:6px">แสดง 200 แถวแรกจากทั้งหมด '+g.length+' แถว</div>':'');
+}
+function colLabel(c){let s='';c++;while(c>0){const m=(c-1)%26;s=String.fromCharCode(65+m)+s;c=(c-m-1)/26;}return s;}
+function jump(sheet,cell){
+  const R=FILES[ACTIVE].rep, i=R.visible.indexOf(sheet); if(i<0)return;
+  showSheet(sheet,document.querySelectorAll('#ss button')[i]);
+  const el=document.getElementById('c-'+cell);
+  if(el){el.scrollIntoView({block:'center',inline:'center'});el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),2200);}
+  document.getElementById('sheetview').scrollIntoView({behavior:'smooth',block:'center'});
+}
+function expo(){
+  const F=FILES[ACTIVE],R=F.rep;
+  const rows=[['ไฟล์','ชีต','เซลล์','ระดับ','ประเภท','รายละเอียด']];
+  R.issues.forEach(i=>rows.push([F.name,i.sheet,i.cell,i.sev==='bad'?'ต้องแก้':'ควรตรวจซ้ำ',i.title,i.detail]));
+  R.ok.forEach(o=>rows.push([F.name,o.sheet,'','ผ่าน',o.title,'']));
+  const csv='\uFEFF'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='ผลตรวจ-'+F.name.replace(/\.[^.]+$/,'')+'.csv';a.click();
+}
+</script>
+</body>
+</html>
