@@ -218,42 +218,59 @@ for tab, up in zip(tabs, files):
                     st.image(r_["image"], caption=f"รูปที่ {r_['index']}", use_container_width=True)
 
         # ---------- ไฟล์หัวหน้าทีม ----------
-        st.markdown("#### เทียบกับไฟล์บันทึกของหัวหน้าทีม")
-        st.caption("อัปโหลดไฟล์รายชั่วโมงของหัวหน้าทีม ระบบจะหาชั่วโมงที่ยอดตก (ดิป) เกิน 20% "
-                   "แล้วเทียบว่าดิปตกที่ชั่วโมงเดียวกับไฟล์รายงานหรือไม่ และยอดรายชั่วโมงต่างกันกี่ %")
+        st.markdown("#### ตรวจไฟล์บันทึกของหัวหน้าทีม (ค่าดิปรายชั่วโมง)")
+        st.caption("ค่าดิป = ผลต่างระหว่างวันที่ 1 กับวันที่ 2 ของชั่วโมงนั้น "
+                   "ระบบจะหาชั่วโมงที่ดิปเกินเกณฑ์ ตรวจว่าค่าดิปในไฟล์คำนวณถูกไหม "
+                   "และเทียบยอดเฉลี่ย/วันกับตารางรายชั่วโมงของไฟล์รายงาน")
         col_a, col_b = st.columns([3, 1])
         team_file = col_a.file_uploader("ไฟล์หัวหน้าทีม (.xls / .xlsx)", type=["xls", "xlsx", "xlsm"],
                                         key=f"team-{up.name}")
-        thr = col_b.slider("เกณฑ์ %", 5, 50, 20, 5, key=f"thr-{up.name}") / 100
+        thr = col_b.slider("เกณฑ์ดิป %", 5, 50, 20, 5, key=f"thr-{up.name}") / 100
         if team_file:
             try:
                 team = teamsheet.parse_team_sheet(team_file.getvalue(), team_file.name)
-                rep_hours = teamsheet.report_hourly(rep)
-                cmp_ = teamsheet.compare(team, rep_hours, threshold=thr, gap=thr)
+                res = teamsheet.analyse(team, teamsheet.report_hourly(rep), threshold=thr)
             except Exception as e:                # noqa: BLE001
-                cmp_ = {}
+                res = {}
                 st.error(f"อ่านไฟล์หัวหน้าทีมไม่ได้: {e}")
-            if not cmp_:
-                st.warning("จับคู่ตารางรายชั่วโมงของสองไฟล์ไม่ได้ — ตรวจว่าไฟล์หัวหน้าทีมมีคอลัมน์ "
-                           "\"ชม.\" และ \"ผลต่างรายชั่วโมง\" ครบทั้งสามผลัด")
+            if not res:
+                st.warning("อ่านตารางรายชั่วโมงไม่ได้ — ตรวจว่าไฟล์มีแถวหัวตารางคำว่า \"ชม.\" "
+                           "และคอลัมน์ \"รายชั่วโมง\" ครบทุกผลัด")
             else:
-                st.caption(f"ไฟล์หัวหน้าทีมมี {len(team['days'])} วัน · เทียบกับตารางรายชั่วโมงในชีต "
-                           f"{rep_hours['sheet']} จำนวน {len(cmp_['hours'])} ชั่วโมง")
-                for kind, res in cmp_["kinds"].items():
-                    st.markdown(f"**{kind}** — ยอดรวมรายชั่วโมง หัวหน้าทีม {res['total_team']:,} · "
-                                f"ไฟล์รายงาน {res['total_report']:,}")
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("ดิปที่ตรงกัน", len(res["both"]))
-                    m2.metric("ดิปเฉพาะไฟล์หัวหน้าทีม", len(res["only_team"]))
-                    m3.metric("ดิปเฉพาะไฟล์รายงาน", len(res["only_report"]))
-                    m4.metric(f"ชั่วโมงที่ต่างเกิน {int(thr*100)}%", len(res["big_gap"]))
-                    if res["big_gap"]:
-                        st.error("ชั่วโมงที่ยอดสองไฟล์ต่างกันเกินเกณฑ์: "
-                                 + ", ".join(f'{x["ชั่วโมง"]} ({x["ต่าง %"]:+.1f}%)' for x in res["big_gap"]))
-                    elif not res["only_team"] and not res["only_report"]:
-                        st.success("ยอดรายชั่วโมงและตำแหน่งดิปของสองไฟล์สอดคล้องกัน")
-                    with st.expander(f"ดูตารางรายชั่วโมงของ{kind}"):
-                        st.dataframe(pd.DataFrame(res["rows"]), use_container_width=True, hide_index=True)
+                st.caption(f'อ่านได้ {res["n_hours"]} ชั่วโมง × {team["n_days"]} วัน '
+                           f'({", ".join(team["shifts"])})')
+                m1, m2, m3 = st.columns(3)
+                m1.metric(f"ชั่วโมงที่ดิปเกิน {int(thr*100)}%", len(res["dips"]))
+                m2.metric("ค่าดิปในไฟล์คำนวณผิด", len(res["formula_bad"]))
+                m3.metric("ยอดต่างจากไฟล์รายงานเกิน 5%", len(res["gap"]))
+
+                if res["dips"]:
+                    st.warning("**ชั่วโมงที่ค่าดิปเกินเกณฑ์**\n\n" + "\n".join(
+                        f'- {x["ผลัด"]} ชม.{x["ชม."]} {x["ช่วงเวลา"]} · {x["ประเภท"]} : '
+                        f'{x["วันที่ 1"]:,.0f} → {x["วันที่ 2"]:,.0f} ({x["ค่าดิป %"]:.1f}%)'
+                        for x in res["dips"]))
+                else:
+                    st.success(f'ไม่มีชั่วโมงที่ดิปเกิน {int(thr*100)}%')
+
+                if res["formula_bad"]:
+                    st.error("**ค่า %diff ในไฟล์ไม่ตรงกับที่คำนวณจากยอดสองวัน**\n\n" + "\n".join(
+                        f'- {x["ผลัด"]} ชม.{x["ชม."]} · {x["ประเภท"]} : ในไฟล์ {x["ดิปในไฟล์ %"]}% '
+                        f'แต่คำนวณได้ {x["ค่าดิป %"]}%' for x in res["formula_bad"]))
+                if res["gap"]:
+                    st.error("**ยอดในไฟล์หัวหน้าทีมไม่ตรงกับไฟล์รายงาน**\n\n" + "\n".join(
+                        f'- {x["ผลัด"]} ชม.{x["ชม."]} {x["ช่วงเวลา"]} · {x["ประเภท"]} : '
+                        f'เฉลี่ย/วัน {x["เฉลี่ย/วัน"]:,.1f} แต่ไฟล์รายงานใส่ {x["ไฟล์รายงาน"]:,.1f} '
+                        f'(ต่าง {x["ต่างจากรายงาน"]:+,.1f})' for x in res["gap"]))
+                elif res["has_report"]:
+                    st.success("ยอดรายชั่วโมงของสองไฟล์สอดคล้องกันทุกชั่วโมง")
+
+                only_dip = st.checkbox("แสดงเฉพาะชั่วโมงที่เกินเกณฑ์", key=f"od-{up.name}")
+                table = pd.DataFrame(res["dips"] if only_dip else res["rows"])
+                st.dataframe(table, use_container_width=True, hide_index=True)
+                st.download_button("บันทึกผลตรวจค่าดิปเป็น CSV",
+                                   table.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name=f"ค่าดิป-{up.name.rsplit('.', 1)[0]}.csv",
+                                   mime="text/csv", key=f"dldip-{up.name}")
 
         # ---------- ดูข้อมูลในชีต ----------
         st.markdown("#### ดูข้อมูลในชีต")

@@ -1,17 +1,19 @@
-"""ตรวจไฟล์บันทึกของหัวหน้าทีม (ตารางรายชั่วโมงของแต่ละผลัด)
+"""ตรวจไฟล์บันทึกของหัวหน้าทีม (ตารางรายชั่วโมงแยกวันที่ 1 / วันที่ 2)
 
-สิ่งที่ทำ
-1. อ่านยอด "ผลต่างรายชั่วโมง" ของคนและรถ แยกวันที่ 1 / วันที่ 2 เรียงตามชั่วโมง (เช้า → บ่าย → ดึก)
-2. หา "ค่าดิป" คือชั่วโมงที่ยอดตกจากชั่วโมงก่อนหน้าเกินเกณฑ์ (ค่าเริ่มต้น 20%)
-3. เทียบกับตารางรายชั่วโมงในไฟล์รายงาน ว่าดิปตกที่ชั่วโมงเดียวกันหรือไม่ และยอดรายชั่วโมงต่างกันกี่ %
+โครงไฟล์ต่างกันไปตามไซต์ (คอลัมน์และแถวไม่ตรงกัน) จึงหาตำแหน่งจากหัวตารางเสมอ:
+- แถวหัวตารางคือแถวที่มีคำว่า "ชม."  จำนวน "ชม." ในแถว = จำนวนวันที่จับ
+- คอลัมน์ยอดรายชั่วโมงคือคอลัมน์ที่หัวเขียนว่า "รายชั่วโมง" โดยดูป้ายด้านบนว่าเป็น "คนผ่าน" หรือ "รถผ่าน"
+- คอลัมน์ค่าดิปคือคอลัมน์ที่หัวเขียนว่า "%diff คน" / "%diff รถ" (ผลต่างระหว่างสองวันของชั่วโมงนั้น)
+
+ค่าดิป = |วันที่ 2 − วันที่ 1| ÷ (วันที่ 1 + วันที่ 2)
 """
 from __future__ import annotations
 
 import io
 import re
 
-DIP = 0.20      # ยอดตกเกิน 20% ถือเป็นดิป
-GAP = 0.20      # ยอดรายชั่วโมงต่างกันเกิน 20% ถือว่าไม่ใกล้เคียง
+DIP = 0.20      # ค่าดิปเกินเท่านี้ = ต้องดู
+TOL = 0.5       # ยอดรายชั่วโมงคลาดเคลื่อนได้ ±0.5
 
 
 def _load(data: bytes, filename: str):
@@ -22,7 +24,7 @@ def _load(data: bytes, filename: str):
         return [[sh.cell(r, c).value if sh.cell(r, c).ctype != 0 else None
                  for c in range(sh.ncols)] for r in range(sh.nrows)]
     import openpyxl.styles.fonts as _f
-    _f.Font.family.max = 100            # ไฟล์บางไฟล์ใส่ค่า font family เกินมาตรฐาน
+    _f.Font.family.max = 100          # บางไฟล์ใส่ค่า font family เกินมาตรฐาน
     from openpyxl import load_workbook
     ws = load_workbook(io.BytesIO(data), data_only=True).worksheets[0]
     return [[c.value for c in row] for row in ws.iter_rows()]
@@ -37,112 +39,129 @@ def _num(v):
     return float(t) if re.fullmatch(r"-?\d*\.?\d+", t) else None
 
 
-def parse_team_sheet(data: bytes, filename: str) -> dict:
-    """คืนค่า {'days': [{'people': [...], 'cars': [...]}, ...], 'shifts': [...]}"""
-    grid = _load(data, filename)
-    starts, shifts = [], []
-    for r, row in enumerate(grid):
-        cols = [c for c, v in enumerate(row) if str(v).strip() == "ชม."]
-        if not cols:
-            continue
-        name = ""
-        if r > 0:
-            for v in grid[r - 1]:
-                if str(v).strip() in ("เช้า", "บ่าย", "ดึก"):
-                    name = str(v).strip()
-                    break
-        starts.append((r, cols))
-        shifts.append(name or f"ผลัดที่ {len(starts)}")
+def _S(v):
+    return "" if v is None else str(v).strip()
 
-    days = []
-    for r, cols in starts:
-        for d, c0 in enumerate(cols):
-            while len(days) <= d:
-                days.append({"people": [], "cars": [], "hours": []})
-            rr = r + 1
-            while rr < len(grid):
-                h = _num(grid[rr][c0]) if c0 < len(grid[rr]) else None
-                if h is None or h != int(h) or not (1 <= h <= 24):
+
+def parse_team_sheet(data: bytes, filename: str) -> dict:
+    """คืนค่ารายชั่วโมง พร้อมยอดของทั้งสองวัน ค่าดิปในไฟล์ และค่าดิปที่คำนวณใหม่"""
+    grid = _load(data, filename)
+    hours, shift_names = [], []
+
+    for r, row in enumerate(grid):
+        hcols = [c for c, v in enumerate(row) if _S(v) == "ชม."]
+        if not hcols:
+            continue
+        above = grid[r - 1] if r > 0 else []
+        shift = next((_S(v) for v in above if _S(v) in ("เช้า", "บ่าย", "ดึก")),
+                     f"ผลัดที่ {len(shift_names) + 1}")
+        shift_names.append(shift)
+
+        val_cols = []
+        for c, v in enumerate(row):
+            if _S(v) != "รายชั่วโมง":
+                continue
+            kind = ""
+            for cc in range(c, -1, -1):
+                t = _S(above[cc]) if cc < len(above) else ""
+                if t in ("คนผ่าน", "รถผ่าน"):
+                    kind = "คน" if t == "คนผ่าน" else "รถ"
                     break
-                get = lambda off: (_num(grid[rr][c0 + off]) if c0 + off < len(grid[rr]) else None) or 0.0
-                days[d]["people"].append(get(4))
-                days[d]["cars"].append(get(8))
-                days[d]["hours"].append(f"{shifts[starts.index((r, cols))]} ชม.{int(h)}")
-                rr += 1
-    return {"days": days, "shifts": shifts}
+            day = sum(1 for hc in hcols if hc < c) - 1
+            if kind and day >= 0:
+                val_cols.append((c, kind, day))
+
+        dip_cols = {}
+        for src in (row, above):
+            for c, v in enumerate(src):
+                m = re.match(r"%\s*diff\s*(คน|รถ)", _S(v))
+                if m:
+                    dip_cols.setdefault(m.group(1), c)
+
+        n_days = len(hcols)
+        rr = r + 1
+        while rr < len(grid):
+            h = _num(grid[rr][hcols[0]]) if hcols[0] < len(grid[rr]) else None
+            if h is None or h != int(h) or not 1 <= h <= 24:
+                break
+            rec = {"shift": shift, "hour": int(h), "row": rr + 1}
+            for kind in ("คน", "รถ"):
+                vals = []
+                for d in range(n_days):
+                    col = next((c for c, k, dd in val_cols if k == kind and dd == d), None)
+                    vals.append((_num(grid[rr][col]) if col is not None and col < len(grid[rr]) else None) or 0.0)
+                rec[kind] = vals
+                total = sum(vals)
+                rec[f"ดิป_{kind}"] = (abs(vals[1] - vals[0]) / total) if len(vals) > 1 and total else None
+                col = dip_cols.get(kind)
+                rec[f"ดิปในไฟล์_{kind}"] = (_num(grid[rr][col])
+                                            if col is not None and col < len(grid[rr]) else None)
+            hours.append(rec)
+            rr += 1
+
+    return {"hours": hours, "shifts": shift_names,
+            "n_days": max((len(h["คน"]) for h in hours), default=0)}
 
 
 def report_hourly(rep) -> dict:
-    """ดึงตารางรายชั่วโมง (ค่าเฉลี่ย/วัน) จากชีตกราฟของไฟล์รายงาน"""
+    """ตารางรายชั่วโมง (ค่าเฉลี่ย/วัน) จากชีตกราฟของไฟล์รายงาน"""
     for sheet in rep.sheets:
         grid = sheet.grid
-        hr = next((r for r, row in enumerate(grid)
-                   if any(str(v or "").strip() == "ช่วงเวลา" for v in row)), None)
+        hr = next((r for r, row in enumerate(grid) if any(_S(v) == "ช่วงเวลา" for v in row)), None)
         if hr is None:
             continue
-        labcol = next(c for c, v in enumerate(grid[hr]) if str(v or "").strip() == "ช่วงเวลา")
-        pcol = next((c for c, v in enumerate(grid[hr]) if "เฉลี่ย" in str(v or "")), labcol + 1)
-        ccol = next((c for c, v in enumerate(grid[hr + 1]) if "จำนวนรถ" in str(v or "")), None)
-        if ccol is None:
-            ccol = next((c for c, v in enumerate(grid[hr]) if "พาหนะ" in str(v or "")), None)
-        hours, people, cars = [], [], []
+        labcol = next(c for c, v in enumerate(grid[hr]) if _S(v) == "ช่วงเวลา")
+        pcol = next((c for c, v in enumerate(grid[hr]) if "เฉลี่ย" in _S(v)), labcol + 1)
+        ccol = next((c for c, v in enumerate(grid[hr + 1]) if "จำนวนรถ" in _S(v)), None)
+        out = {"sheet": sheet.name, "hours": [], "คน": [], "รถ": []}
         for r in range(hr + 1, len(grid)):
-            lab = str(grid[r][labcol] or "").strip() if labcol < len(grid[r]) else ""
+            lab = _S(grid[r][labcol]) if labcol < len(grid[r]) else ""
             if not re.match(r"^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}", lab):
                 continue
-            hours.append(lab)
-            people.append(_num(grid[r][pcol]) or 0.0)
-            cars.append((_num(grid[r][ccol]) if ccol is not None and ccol < len(grid[r]) else None) or 0.0)
-        if hours:
-            return {"sheet": sheet.name, "hours": hours, "people": people, "cars": cars}
+            out["hours"].append(lab)
+            out["คน"].append(_num(grid[r][pcol]) or 0.0)
+            out["รถ"].append((_num(grid[r][ccol]) if ccol is not None and ccol < len(grid[r]) else None) or 0.0)
+        if out["hours"]:
+            return out
     return {}
 
 
-def find_dips(series: list, threshold: float = DIP) -> list:
-    """ชั่วโมงที่ยอดตกจากชั่วโมงก่อนหน้าเกินเกณฑ์"""
-    out = []
-    for i in range(1, len(series)):
-        prev, cur = series[i - 1], series[i]
-        if prev <= 0:
-            continue
-        change = (cur - prev) / prev
-        if change <= -threshold:
-            out.append({"i": i, "prev": prev, "cur": cur, "drop": change})
-    return out
-
-
-def compare(team: dict, report: dict, threshold: float = DIP, gap: float = GAP) -> dict:
-    """เทียบค่าดิปและยอดรายชั่วโมงของไฟล์หัวหน้าทีมกับไฟล์รายงาน"""
-    days = team.get("days") or []
-    if not days or not report:
+def analyse(team: dict, report: dict | None = None, threshold: float = DIP,
+            gap_pct: float = 0.05) -> dict:
+    """หาชั่วโมงที่ค่าดิปเกินเกณฑ์ ตรวจสูตรดิปในไฟล์ และเทียบยอดกับไฟล์รายงาน"""
+    hours = team.get("hours") or []
+    if not hours:
         return {}
-    n = min([len(d["people"]) for d in days] + [len(report["people"])])
-    avg = {k: [sum(d[k][i] for d in days) / len(days) for i in range(n)] for k in ("people", "cars")}
-    rep_series = {k: report[k][:n] for k in ("people", "cars")}
-    hours = report["hours"][:n]
+    rep_hours = (report or {}).get("hours") or []
+    rows, dips, formula_bad, gap = [], [], [], []
 
-    out = {"hours": hours, "kinds": {}}
-    for kind, name in (("people", "คน"), ("cars", "รถ")):
-        t, r = avg[kind], rep_series[kind]
-        t_dips = {d["i"] for d in find_dips(t, threshold)}
-        r_dips = {d["i"] for d in find_dips(r, threshold)}
-        rows = []
-        for i in range(n):
-            diff = t[i] - r[i]
-            pct = diff / r[i] if r[i] else (0.0 if not diff else None)
-            rows.append({
-                "ชั่วโมง": hours[i],
-                f"หัวหน้าทีม (เฉลี่ย/วัน)": round(t[i], 2),
-                "ไฟล์รายงาน": round(r[i], 2),
-                "ต่าง": round(diff, 2),
-                "ต่าง %": None if pct is None else round(pct * 100, 2),
-                "ดิปในไฟล์หัวหน้าทีม": "✓" if i in t_dips else "",
-                "ดิปในไฟล์รายงาน": "✓" if i in r_dips else "",
-                "ตรงกัน": "" if i not in (t_dips | r_dips) else ("ตรงกัน" if i in (t_dips & r_dips) else "ไม่ตรงกัน"),
-            })
-        both, only_t, only_r = t_dips & r_dips, t_dips - r_dips, r_dips - t_dips
-        big = [x for x in rows if x["ต่าง %"] is not None and abs(x["ต่าง %"]) > gap * 100]
-        out["kinds"][name] = {"rows": rows, "both": sorted(both), "only_team": sorted(only_t),
-                              "only_report": sorted(only_r), "big_gap": big,
-                              "total_team": round(sum(t), 2), "total_report": round(sum(r), 2)}
-    return out
+    for i, h in enumerate(hours):
+        for kind in ("คน", "รถ"):
+            d = h[f"ดิป_{kind}"]
+            in_file = h[f"ดิปในไฟล์_{kind}"]
+            vals = h[kind]
+            avg = sum(vals) / len(vals) if vals else 0.0
+            rep_v = report[kind][i] if report and i < len(report.get(kind, [])) else None
+            row = {
+                "ผลัด": h["shift"], "ชม.": h["hour"],
+                "ช่วงเวลา": rep_hours[i] if i < len(rep_hours) else "",
+                "ประเภท": kind,
+                "วันที่ 1": vals[0] if vals else None,
+                "วันที่ 2": vals[1] if len(vals) > 1 else None,
+                "ค่าดิป %": None if d is None else round(d * 100, 2),
+                "ดิปในไฟล์ %": None if in_file is None else round(in_file * 100, 2),
+                "เฉลี่ย/วัน": round(avg, 2),
+                "ไฟล์รายงาน": rep_v,
+                "ต่างจากรายงาน": None if rep_v is None else round(avg - rep_v, 2),
+                "เกินเกณฑ์": "🚩" if (d is not None and d > threshold) else "",
+            }
+            rows.append(row)
+            if d is not None and d > threshold:
+                dips.append(row)
+            if d is not None and in_file is not None and abs(d - in_file) > 0.005:
+                formula_bad.append(row)
+            if rep_v is not None and abs(avg - rep_v) > max(TOL, abs(rep_v) * gap_pct):
+                gap.append(row)
+
+    return {"rows": rows, "dips": dips, "formula_bad": formula_bad, "gap": gap,
+            "n_hours": len(hours), "has_report": bool(report)}
