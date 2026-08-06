@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 TOL = 0.5        # คลาดเคลื่อนของจำนวนนับ
+DAY_FLAG = 0.30  # ผลต่างยอดรวมระหว่างสองวันเกินเท่านี้ = น่าสงสัย
 PTOL = 0.0015    # คลาดเคลื่อนของ %สัดส่วน
 VALKEYS = ["ผลัดเช้า", "ผลัดบ่าย", "ผลัดดึก", "รวมทั้งวัน", "%สัดส่วน"]
 SKIP_SHEETS = re.compile(r"^\s*สรุป\s*\(?\s*2\s*\)?\s*$")
@@ -94,6 +95,8 @@ class Report:
     key_totals: list = field(default_factory=list)  # ยอดรวมสำคัญไว้เทียบกับรูป
     categories: dict = field(default_factory=dict)  # หมวด -> รายการย่อยในชีต data
     structure: list = field(default_factory=list)   # โครงตารางที่อ่านได้ (แถว/คอลัมน์ต่างกันตามไซต์)
+    day_names: list = field(default_factory=list)   # ชื่อกลุ่มคอลัมน์รายวัน
+    day_rows: list = field(default_factory=list)    # เปรียบเทียบวันที่ 1 กับวันที่ 2
     numbers: list = field(default_factory=list)  # ตัวเลขทั้งหมดในตาราง data
 
     @property
@@ -482,6 +485,40 @@ def check_data(sheet: Sheet, rep: Report):
                     if v < 0:
                         add("bad", row["r"], c, "ค่าติดลบ",
                             f'{gr["title"]} · {row["block"]} {row["item"]} ({key}) = {fmt(v)}')
+
+        # เก็บข้อมูลเปรียบเทียบรายวันไว้ทำแดชบอร์ด
+        day_groups = [g for g in t["groups"] if "วัน" in g["title"]]
+        if len(day_groups) >= 2:
+            if not rep.day_names:
+                rep.day_names = [g["title"] for g in day_groups]
+            keys = [k for _, k in day_groups[0]["keys"] if k != "%สัดส่วน"]
+            for row in rows:
+                label = (row["block"] + " " + row["item"]).strip()
+                for key in keys:
+                    vals = []
+                    for dg in day_groups:
+                        col = next((c for c, kk in dg["keys"] if kk == key), None)
+                        vals.append(num(grid[row["r"]][col]) if col is not None else None)
+                    if any(v is None for v in vals):
+                        continue
+                    rep.day_rows.append({
+                        "รายการ": label, "ประเภท": "คน" if "คน" in label else ("รถ" if "รถ" in label else "อื่น"),
+                        "ช่วง": key, "เป็นยอดรวม": row["is_total"],
+                        "values": vals,
+                        "ต่าง": vals[1] - vals[0],
+                        "ต่าง %": None if not vals[0] else round((vals[1] - vals[0]) / vals[0] * 100, 2),
+                    })
+
+        # ยอดรวมทั้งวันที่ต่างกันเกินเกณฑ์ = น่าสงสัย ให้ตรวจซ้ำ
+        for x in rep.day_rows:
+            if not x["เป็นยอดรวม"] or x["ช่วง"] != "รวมทั้งวัน" or x["ต่าง %"] is None:
+                continue
+            if abs(x["ต่าง %"]) > DAY_FLAG * 100 and max(x["values"]) >= 10:
+                rep.issues.append(Issue(
+                    name, "", "warn", "ผลต่างระหว่างสองวันสูงผิดปกติ",
+                    f'{x["รายการ"]} : {rep.day_names[0]} = {fmt(x["values"][0])} · '
+                    f'{rep.day_names[1]} = {fmt(x["values"][1])} — ต่างกัน {x["ต่าง %"]:+.1f}% '
+                    f'(เกินเกณฑ์ {int(DAY_FLAG * 100)}%) ควรตรวจสาเหตุ เช่น สภาพอากาศ วันหยุด หรือการนับผิดผลัด'))
 
         # 6) คอลัมน์เฉลี่ยของหลายวัน
         days = [g for g in t["groups"] if "วัน" in g["title"]]

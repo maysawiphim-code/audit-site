@@ -73,6 +73,73 @@ for tab, up in zip(tabs, files):
             else:
                 st.warning("อ่านโครงตารางไม่ได้ — ตรวจไฟล์นี้ด้วยตาไปก่อน")
 
+        # ---------- แดชบอร์ดเทียบวันที่ 1 กับวันที่ 2 (เมนูเสริม) ----------
+        if rep.day_rows and len(rep.day_names) >= 2:
+            with st.expander("📊 แดชบอร์ดเทียบวันที่ 1 กับวันที่ 2 (สำหรับสรุปนำเสนอ)"):
+                if st.button("แสดงแดชบอร์ด", key=f"dash-{up.name}"):
+                    st.session_state[f"dash-on-{up.name}"] = True
+                if st.session_state.get(f"dash-on-{up.name}"):
+                    d1, d2 = rep.day_names[0], rep.day_names[1]
+                    flag = st.slider("ธงเตือนเมื่อผลต่างเกิน (%)", 10, 100, 30, 5,
+                                     key=f"flag-{up.name}")
+                    totals = [x for x in rep.day_rows if x["เป็นยอดรวม"] and x["ช่วง"] == "รวมทั้งวัน"]
+                    cols = st.columns(max(len(totals), 1))
+                    for col, x in zip(cols, totals):
+                        name_ = (x["รายการ"].replace("จำนวนคน (ยอดรวม)", "คน")
+                                 .replace("จำนวนรถ (ยอดรวม)", "รถ"))
+                        over = x["ต่าง %"] is not None and abs(x["ต่าง %"]) > flag
+                        col.metric(("🚩 " if over else "") + name_, f'{x["values"][1]:,.0f}',
+                                   f'{x["ต่าง"]:+,.0f} ({x["ต่าง %"]:+.1f}%)' if x["ต่าง %"] is not None else None)
+                    st.caption(f"ตัวเลขใหญ่คือ {d2} · ตัวเลขเล็กคือผลต่างจาก {d1} · 🚩 = เกินเกณฑ์ {flag}%")
+
+                    flagged = [x for x in rep.day_rows
+                               if x["เป็นยอดรวม"] and x["ต่าง %"] is not None
+                               and abs(x["ต่าง %"]) > flag and max(x["values"]) >= 10]
+                    if flagged:
+                        st.warning("**รายการที่ต่างกันเกินเกณฑ์ ควรอธิบายสาเหตุก่อนนำเสนอ**\n\n"
+                                   + "\n".join(f'- {x["รายการ"]} · {x["ช่วง"]} : '
+                                                f'{x["values"][0]:,.0f} → {x["values"][1]:,.0f} '
+                                                f'({x["ต่าง %"]:+.1f}%)' for x in flagged))
+                    else:
+                        st.success(f"ยอดรวมของสองวันต่างกันไม่เกิน {flag}% ทุกรายการ")
+
+                    shifts = [x for x in rep.day_rows if x["เป็นยอดรวม"] and x["ช่วง"] != "รวมทั้งวัน"]
+                    if shifts:
+                        chart = pd.DataFrame([{"รายการ": f'{x["รายการ"]} · {x["ช่วง"]}',
+                                               d1: x["values"][0], d2: x["values"][1]}
+                                              for x in shifts]).set_index("รายการ")
+                        st.bar_chart(chart, height=320)
+
+                    view = st.radio("ดูรายการ", ["เฉพาะยอดรวม", "ทุกรายการ"], horizontal=True,
+                                    key=f"dv-{up.name}")
+                    rows_ = rep.day_rows if view == "ทุกรายการ" else [x for x in rep.day_rows if x["เป็นยอดรวม"]]
+                    table = pd.DataFrame([{
+                        "รายการ": x["รายการ"], "ประเภท": x["ประเภท"], "ช่วง": x["ช่วง"],
+                        d1: x["values"][0], d2: x["values"][1], "ต่าง": x["ต่าง"], "ต่าง %": x["ต่าง %"],
+                        "ธง": "🚩" if (x["ต่าง %"] is not None and abs(x["ต่าง %"]) > flag
+                                      and max(x["values"]) >= 10) else "",
+                    } for x in rows_])
+                    st.dataframe(table, use_container_width=True, hide_index=True)
+
+                    lines = [f"# สรุปเปรียบเทียบรายวัน — {rep.site or up.name}", "",
+                             f"- วันที่ 1: {d1}", f"- วันที่ 2: {d2}", ""]
+                    for x in totals:
+                        lines.append(f'- {x["รายการ"]}: {x["values"][0]:,.0f} → {x["values"][1]:,.0f} '
+                                     f'({x["ต่าง %"]:+.1f}%)' if x["ต่าง %"] is not None else
+                                     f'- {x["รายการ"]}: {x["values"][0]:,.0f} → {x["values"][1]:,.0f}')
+                    if flagged:
+                        lines += ["", f"ต้องอธิบายสาเหตุ (ต่างเกิน {flag}%):"]
+                        lines += [f'- {x["รายการ"]} · {x["ช่วง"]} ({x["ต่าง %"]:+.1f}%)' for x in flagged]
+                    c1_, c2_ = st.columns(2)
+                    c1_.download_button("บันทึกตารางเป็น CSV",
+                                        table.to_csv(index=False).encode("utf-8-sig"),
+                                        file_name=f"เทียบรายวัน-{up.name.rsplit('.', 1)[0]}.csv",
+                                        mime="text/csv", key=f"dlday-{up.name}")
+                    c2_.download_button("บันทึกสรุปสำหรับนำเสนอ (.md)",
+                                        "\n".join(lines).encode("utf-8"),
+                                        file_name=f"สรุปนำเสนอ-{up.name.rsplit('.', 1)[0]}.md",
+                                        mime="text/markdown", key=f"dlmd-{up.name}")
+
         # ---------- ยอดรวมคนและรถ ----------
         if rep.key_totals:
             st.markdown("#### ยอดรวมคนและรถที่ตรวจได้จากชีต data")
