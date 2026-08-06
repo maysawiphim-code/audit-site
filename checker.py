@@ -67,6 +67,7 @@ class Issue:
     sev: str          # bad | warn
     title: str
     detail: str
+    exempt_color: bool = False   # True = ตรวจแม้ช่องนั้นไม่ได้ใส่สี (ข้อความ/หัวเรื่อง/ยอดรวมชีตสรุป)
 
 
 @dataclass
@@ -91,6 +92,7 @@ class Report:
     days: list = field(default_factory=list)
     totals: list = field(default_factory=list)      # ยอดรวมคน/รถ ที่ดึงได้
     key_totals: list = field(default_factory=list)  # ยอดรวมสำคัญไว้เทียบกับรูป
+    categories: dict = field(default_factory=dict)  # หมวด -> รายการย่อยในชีต data
     numbers: list = field(default_factory=list)  # ตัวเลขทั้งหมดในตาราง data
 
     @property
@@ -439,6 +441,11 @@ def check_data(sheet: Sheet, rep: Report):
                             rep.totals.append({"kind": kind, "group": gr["title"], "key": key,
                                                "value": gv, "cell": a1(grand_row["r"], c)})
 
+            # เก็บรายการย่อยของแต่ละหมวด (เพศ/อายุ/อาชีพ/ทิศ/ประเภทรถ)
+            for r in rows:
+                if r["sub"] and not r["is_total"] and r["item"]:
+                    rep.categories.setdefault(r["sub"], set()).add(r["item"])
+
             # เก็บยอดรวมสำคัญไว้เทียบกับรูปในชีตแผนที่/กราฟ
             if "รวมทั้งวัน" in keycol:
                 for r in rows:
@@ -581,12 +588,69 @@ def check_summary(sheet: Sheet, rep: Report):
         rep.passed.append((name, f"ตัวเลข {checked} ค่าตรงกับชีต data ทั้งหมด"))
 
 
+def check_summary_tables(sheet: Sheet, rep: Report):
+    """ตรวจตารางในชีตสรุป: ยอดรวมเพี้ยนเล็กน้อย · ยอดรวมในชีตเดียวกันขัดกันเอง · รายการย่อยหาย"""
+    grid, name = sheet.grid, sheet.name
+    add = lambda sev, r, c, title, detail: rep.issues.append(
+        Issue(name, a1(r, c), sev, title, detail, exempt_color=True))
+
+    # 1) ตัวเลขที่ "เกือบ" เท่ายอดรวมในชีต data (ต่างไม่เกิน 2%) = น่าจะคัดลอกยอดผิด
+    for r, row in enumerate(grid):
+        for c, v in enumerate(row):
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or abs(v) < 10:
+                continue
+            v = float(v)
+            if any(near(b, v) for b in rep.numbers):   # มีค่านี้จริงในชีต data
+                continue
+            for k in rep.key_totals:
+                if abs(v - k["value"]) <= max(abs(k["value"]) * 0.02, 1):
+                    add("bad", r, c, "ยอดรวมในชีตสรุปไม่ตรงกับชีต data",
+                        f'ค่า {fmt(v)} ในชีตนี้ใกล้เคียงกับ "{k["label"]}" ของชีต {rep.data_name} '
+                        f'ซึ่งเป็น {fmt(k["value"])} (เซลล์ {k["cell"]}) — ต่าง {fmt(v - k["value"])}')
+                    break
+
+    # 2) ยอดรวมชนิดเดียวกันในชีตเดียวกันต้องเท่ากัน
+    tot_cells = {}
+    for r, row in enumerate(grid):
+        label = " ".join(S(v) for v in row if isinstance(v, str))
+        if not label:
+            continue
+        kind = "คน" if "คน" in label else ("รถ" if "รถ" in label else None)
+        if kind and re.search(r"ยอดรวม|^เพศ|ทิศคน|ทิศรถ", label):
+            for c, v in enumerate(row):
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and abs(v) >= 10:
+                    tot_cells.setdefault(kind, []).append((r, c, float(v), label[:40]))
+                    break
+    for kind, lst in tot_cells.items():
+        if len(lst) < 2:
+            continue
+        base = lst[0]
+        for r, c, v, lab in lst[1:]:
+            if not near(v, base[2]):
+                add("bad", r, c, "ยอดรวมในชีตเดียวกันขัดกันเอง",
+                    f'"{lab}" = {fmt(v)} แต่ "{base[3]}" ในชีตเดียวกัน = {fmt(base[2])} '
+                    f"— ยอดรวมของ{kind}ต้องเป็นค่าเดียวกันทั้งชีต")
+
+    # 3) รายการย่อยในตารางสรุปต้องครบเท่าชีต data
+    import difflib
+    texts = [S(v) for row in grid for v in row if isinstance(v, str) and S(v)]
+    same = lambda a, b: difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
+    for cat, items in rep.categories.items():
+        hit = {i for i in items if any(same(i, t) for t in texts)}
+        missing = items - hit
+        if len(hit) >= 2 and missing:
+            add("bad", 0, 0, "ตารางสรุปมีรายการไม่ครบ",
+                f'หมวด "{cat}" ในชีต {rep.data_name} มี {len(items)} รายการ '
+                f'แต่ชีตนี้ขาด: {", ".join(sorted(missing))} — ยอดรวมของหมวดนี้จึงน้อยกว่าความจริง')
+
+
 MONTHS = "มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม"
 
 
 def check_titles(sheet: Sheet, rep: Report):
     grid, name = sheet.grid, sheet.name
-    add = lambda sev, r, c, title, detail: rep.issues.append(Issue(name, a1(r, c), sev, title, detail))
+    add = lambda sev, r, c, title, detail: rep.issues.append(
+        Issue(name, a1(r, c), sev, title, detail, exempt_color=True))
     norm = lambda t: re.sub(r"[\s()（）]", "", S(t))
     for r in range(min(len(grid), 6)):
         for c, raw in enumerate(grid[r]):
@@ -646,10 +710,12 @@ def audit(data: bytes, filename: str) -> Report:
             continue
         if "สรุป" in sh.name and rep.numbers:
             check_summary(sh, rep)
+            check_summary_tables(sh, rep)
 
     # ตรวจเฉพาะช่องที่ใส่สีไว้ในไฟล์
     fills = {s.name: s.fills for s in visible}
-    rep.issues = [i for i in rep.issues if not i.cell or fills.get(i.sheet, {}).get(i.cell)]
+    rep.issues = [i for i in rep.issues
+                  if i.exempt_color or not i.cell or fills.get(i.sheet, {}).get(i.cell)]
     return rep
 
 
@@ -794,42 +860,118 @@ def check_charts(data: bytes, filename: str, rep: Report) -> list:
     return out
 
 
-def ocr_numbers(img_bytes: bytes) -> list:
-    """อ่านตัวเลขในรูปด้วย OCR (คืนค่า list[float]) — ถ้าไม่มี tesseract จะคืนค่าว่าง"""
-    try:
-        import pytesseract
-        from PIL import Image
-    except Exception:
-        return []
-    if not shutil.which("tesseract"):
+def read_shapes(data: bytes, filename: str) -> list:
+    """อ่านกล่องข้อความ (text box / ลูกศรพร้อมข้อความ) ที่วางทับอยู่บนชีตต่าง ๆ เช่นชีตแผนที่"""
+    blob = as_xlsx(data, filename)
+    if not blob:
         return []
     try:
-        txt = pytesseract.image_to_string(
-            Image.open(io.BytesIO(img_bytes)),
-            config="--psm 11 -c tessedit_char_whitelist=0123456789,.")
+        z = zipfile.ZipFile(io.BytesIO(blob))
     except Exception:
         return []
-    out = []
-    for m in re.findall(r"\d[\d,]*\.?\d*", txt):
-        try:
-            out.append(float(m.replace(",", "")))
-        except ValueError:
-            pass
-    return out
+    names = z.namelist()
+    wbx = z.read("xl/workbook.xml").decode("utf8", "ignore")
+    rels = z.read("xl/_rels/workbook.xml.rels").decode("utf8", "ignore")
+    relmap = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
+    shapes = []
+    for nm, rid in re.findall(r'<sheet name="([^"]+)"[^>]*r:id="([^"]+)"', wbx):
+        target = "xl/" + relmap.get(rid, "").lstrip("/")
+        rp = target.replace("worksheets/", "worksheets/_rels/") + ".rels"
+        if rp not in names:
+            continue
+        for d in re.findall(r'Target="([^"]*drawing\d+\.xml)"', z.read(rp).decode("utf8", "ignore")):
+            dp = "xl/" + d.replace("../", "")
+            if dp not in names:
+                continue
+            x = z.read(dp).decode("utf8", "ignore")
+            for sp in re.findall(r"<xdr:sp[ >].*?</xdr:sp>", x, re.S):
+                for para in re.findall(r"<a:p>.*?</a:p>", sp, re.S):   # แยกทีละบรรทัด
+                    text = "".join(re.findall(r"<a:t>([^<]*)</a:t>", para))
+                    text = re.sub(r"\s+", " ", text).strip()
+                    if text:
+                        shapes.append({"sheet": nm, "text": text})
+    return shapes
+
+
+def _clean_label(t: str) -> str:
+    t = re.sub(r"[\d,\.]+", " ", t)
+    t = re.sub(r"จำนวน|ยอดรวม|\(|\)|คัน|คน|ทั้งวัน|เฉลี่ย|:|\s", "", t)
+    return t
+
+
+def check_shapes(data: bytes, filename: str, rep: Report) -> list:
+    """ตรวจตัวเลขในกล่องข้อความบนชีตแผนที่/สรุป ว่าตรงกับยอดรวมในชีต data หรือไม่"""
+    import difflib
+
+    keys = rep.key_totals
+    if not keys:
+        return []
+    # ถ้ารายงานมีหลายวัน ตัวเลขบนแผนที่จะเป็นค่าเฉลี่ย จึงเทียบกับกลุ่ม "เฉลี่ย" ก่อน
+    avg = [k for k in keys if "เฉลี่ย" in k["group"]]
+    pool = avg or keys
+    grand_car = next((k for k in pool if "ทั้งหมด" in k["label"]), None)
+    people = [k for k in pool if "คน" in k["label"]]
+    grand_people = max(people, key=lambda k: k["value"]) if people else None
+
+    results = []
+    for sh in read_shapes(data, filename):
+        text = sh["text"]
+        body = re.sub(r"\d[\d,]*\.?\d*\s*%", " ", text)     # ตัดค่าเปอร์เซ็นต์ออก
+        nums = [float(n.replace(",", "")) for n in re.findall(r"\d[\d,]*\.?\d*", body)]
+        nums = [n for n in nums if n >= 2]
+        if not nums:
+            continue
+        label = _clean_label(text)
+        best, score = None, 0.0
+        if len(label) >= 4:
+            for k in pool:
+                r = difflib.SequenceMatcher(None, label, _clean_label(k["label"])).ratio()
+                if r > score:
+                    best, score = k, r
+            if score < 0.6:
+                best = None
+        if best is None:
+            if re.match(r"^(รถผ่าน|รถวิ่งผ่าน|รถ)$", label) and grand_car:
+                best = grand_car
+            elif re.match(r"^(คนผ่าน|คนเดินผ่าน|คน)$", label) and grand_people:
+                best = grand_people
+        got = min(nums, key=lambda n: abs(n - best["value"])) if best else max(nums)
+        if best is None:
+            near_by = min(pool, key=lambda k: abs(k["value"] - got))
+            if near(got, near_by["value"]) or abs(near_by["value"] - got) <= max(abs(near_by["value"]) * 0.10, 1):
+                best = near_by
+            else:
+                if got < 10:            # ตัวเลขเล็ก ๆ ในข้อความทั่วไป ไม่ใช่ยอดรวม
+                    continue
+                results.append({**sh, "value": got, "expect": None,
+                                "status": "ไม่พบยอดที่ตรงกันในชีต data"})
+                rep.issues.append(Issue(
+                    sh["sheet"], "", "warn", "กล่องข้อความมียอดที่ไม่มีในชีต data",
+                    f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" มีตัวเลข {fmt(got)} '
+                    f'ซึ่งไม่ตรงกับยอดรวมใดในชีต data — ตรวจว่าเป็นข้อความค้างจากงานเดิมหรือไม่'))
+                continue
+        if abs(got - best["value"]) > max(abs(best["value"]) * 0.25, 1):
+            results.append({**sh, "value": got, "expect": None,
+                            "status": "ไม่พบยอดที่ตรงกันในชีต data"})
+            rep.issues.append(Issue(
+                sh["sheet"], "", "warn", "กล่องข้อความมียอดที่ไม่มีในชีต data",
+                f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" มีตัวเลข {fmt(got)} '
+                f'ซึ่งไม่ตรงกับยอดรวมใดในชีต data — ตรวจว่าเป็นข้อความค้างจากงานเดิมหรือไม่'))
+            continue
+        ok = near(got, best["value"])
+        results.append({**sh, "value": got, "expect": best,
+                        "status": "ตรง" if ok else "ไม่ตรง"})
+        if ok:
+            rep.passed.append((sh["sheet"], f'กล่องข้อความ "{text[:40]}" ตรงกับ {best["label"]} = {fmt(best["value"])}'))
+        else:
+            rep.issues.append(Issue(
+                sh["sheet"], "", "bad", "ตัวเลขในกล่องข้อความไม่ตรงกับชีต data",
+                f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" ใส่ค่า {fmt(got)} '
+                f'แต่ยอดจริงคือ {best["label"]} = {fmt(best["value"])} (ชีต {rep.data_name} เซลล์ {best["cell"]}) '
+                f'— ต่าง {fmt(got - best["value"])}'))
+    return results
 
 
 def check_images(data: bytes, filename: str, rep: Report) -> list:
-    """เทียบยอดรวมสำคัญกับตัวเลขที่ OCR อ่านได้จากรูปในไฟล์ (แผนที่/กราฟ)
-
-    OCR ไม่แม่น 100% ผลลัพธ์จึงเป็น "ตัวช่วยอ่าน" — รูปจะถูกแสดงคู่กับยอดรวมให้ยืนยันด้วยตาเสมอ
-    """
-    results = []
-    for i, img in enumerate(extract_images(data, filename), 1):
-        nums = ocr_numbers(img)
-        found, missing = [], []
-        for k in rep.key_totals:
-            (found if any(near(n, k["value"]) for n in nums) else missing).append(k)
-        odd = sorted({n for n in nums if n >= 1000 and not any(near(b, n) for b in rep.numbers)})
-        results.append({"index": i, "image": img, "ocr": sorted(set(nums)),
-                        "found": found, "missing": missing, "odd": odd})
-    return results
+    """ดึงรูปในไฟล์มาแสดงประกอบ (ไม่ตรวจตัวเลขในรูป — ตัวเลขจริงอยู่ในกล่องข้อความ)"""
+    return [{"index": i, "image": img} for i, img in enumerate(extract_images(data, filename), 1)]

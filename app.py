@@ -41,13 +41,14 @@ for tab, up in zip(tabs, files):
             st.error(f"อ่านไฟล์นี้ไม่ได้: {e} — ลองเปิดใน Excel แล้วบันทึกใหม่เป็น .xlsx")
             continue
 
-        charts = []
+        charts, shapes = [], []
         if deep:
-            with st.spinner("กำลังตรวจกราฟในชีตสรุป (3) และรายชั่วโมง…"):
+            with st.spinner("กำลังตรวจกราฟและกล่องข้อความบนชีตแผนที่…"):
                 try:
                     charts = checker.check_charts(raw, up.name, rep)
+                    shapes = checker.check_shapes(raw, up.name, rep)
                 except Exception as e:              # noqa: BLE001
-                    st.warning(f"ตรวจกราฟไม่สำเร็จ: {e}")
+                    st.warning(f"ตรวจกราฟ/กล่องข้อความไม่สำเร็จ: {e}")
 
         st.subheader(rep.site or up.name)
         st.caption(f"ชีตข้อมูลหลัก: {rep.data_name or '—'} · ตรวจ {len(rep.sheets)} ชีต · "
@@ -84,6 +85,20 @@ for tab, up in zip(tabs, files):
                 "ตรงกับยอดรวม": c["match"]["label"] if c["match"] else "— ไม่ตรงกับยอดใด —",
             } for c in charts]), use_container_width=True, hide_index=True)
 
+        # ---------- กล่องข้อความบนชีตแผนที่ ----------
+        if shapes:
+            wrong = [s_ for s_ in shapes if s_["status"] != "ตรง"]
+            st.markdown(f"#### ตัวเลขในกล่องข้อความบนชีตแผนที่และชีตอื่น — ไม่ตรง {len(wrong)} จุด")
+            st.caption("อ่านข้อความที่พิมพ์กำกับไว้บนรูปโดยตรง (ไม่ได้ใช้ OCR) แล้วเทียบกับยอดรวมในชีต data")
+            st.dataframe(pd.DataFrame([{
+                "ชีต": s_["sheet"], "ข้อความในกล่อง": s_["text"],
+                "ตัวเลขในกล่อง": s_["value"],
+                "ยอดจริงในชีต data": s_["expect"]["value"] if s_["expect"] else None,
+                "รายการที่เทียบ": s_["expect"]["label"] if s_["expect"] else "—",
+                "เซลล์ต้นทาง": s_["expect"]["cell"] if s_["expect"] else "—",
+                "ผล": s_["status"],
+            } for s_ in shapes]), use_container_width=True, hide_index=True)
+
         # ---------- ปัญหา ----------
         st.markdown("#### ผลตรวจ")
         if not rep.issues:
@@ -118,30 +133,11 @@ for tab, up in zip(tabs, files):
                            file_name=f"ผลตรวจ-{up.name.rsplit('.', 1)[0]}.csv", mime="text/csv",
                            key=f"dl-{up.name}")
 
-        # ---------- ชีตแผนที่ / รูปภาพ ----------
-        st.markdown("#### ชีตแผนที่และรูปกราฟ")
-        st.caption("อ่านตัวเลขในรูปด้วย OCR แล้วเทียบกับยอดรวมในชีต data — OCR อ่านผิดได้ "
-                   "จึงแสดงรูปคู่กันไว้ให้ยืนยันด้วยตาเสมอ")
-        if st.button("ตรวจรูปในไฟล์นี้", key=f"img-{up.name}"):
-            with st.spinner("กำลังดึงรูปและอ่านตัวเลข…"):
-                try:
-                    imgs = checker.check_images(raw, up.name, rep)
-                except Exception as e:              # noqa: BLE001
-                    imgs, err = [], str(e)
-                    st.warning(f"ดึงรูปไม่สำเร็จ: {err}")
-            if not imgs:
-                st.info("ไม่พบรูปในไฟล์ หรือเครื่องนี้ไม่มี LibreOffice/Tesseract สำหรับแปลงไฟล์ .xls และอ่านตัวเลข")
-            for r in imgs:
-                st.image(r["image"], caption=f"รูปที่ {r['index']}", use_container_width=True)
-                a, b = st.columns(2)
-                a.success("ยอดรวมที่พบในรูป: " +
-                          (", ".join(f'{k["label"]} = {checker.fmt(k["value"])}' for k in r["found"])
-                           or "— ไม่พบ —"))
-                b.warning("ยอดรวมที่ยังไม่พบในรูป (ตรวจด้วยตาอีกครั้ง): " +
-                          (", ".join(checker.fmt(k["value"]) for k in r["missing"]) or "— ไม่มี —"))
-                if r["odd"]:
-                    st.error("ตัวเลขหลักพันในรูปที่ไม่ตรงกับชีต data: " +
-                             ", ".join(checker.fmt(v) for v in r["odd"]))
+        # ---------- รูปในไฟล์ ----------
+        with st.expander("ดูรูปที่ฝังอยู่ในไฟล์ (แผนที่ / กราฟ)"):
+            if st.button("โหลดรูป", key=f"img-{up.name}"):
+                for r_ in checker.check_images(raw, up.name, rep):
+                    st.image(r_["image"], caption=f"รูปที่ {r_['index']}", use_container_width=True)
 
         # ---------- ดูข้อมูลในชีต ----------
         st.markdown("#### ดูข้อมูลในชีต")
@@ -173,4 +169,4 @@ st.divider()
 st.caption("เกณฑ์ที่ใช้ตรวจ (เฉพาะช่องที่ใส่สี คลาดเคลื่อนได้ ±0.5): ยอดรวมคน/รถทั้งหมด = ผลรวมยอดรวมของทุกจุด · "
            "ผลรวมกลุ่มย่อย = ยอดรวม · ผลัดเช้า+บ่าย+ดึก = รวมทั้งวัน · คอลัมน์เฉลี่ยของหลายวัน · %สัดส่วน · "
            "ตารางรายชั่วโมงรวมยอดตรง · ตัวเลขในชีตสรุปต้องมาจากชีต data · ชื่อทำเล วันที่ ปี พ.ศ. ตรงกันทุกชีต · "
-           "เซลล์สูตรผิดพลาด · ตัวเลขในรูปเทียบกับยอดรวม (OCR)")
+           "เซลล์สูตรผิดพลาด · ตัวเลขในกล่องข้อความบนชีตแผนที่")
