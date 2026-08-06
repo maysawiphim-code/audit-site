@@ -62,6 +62,15 @@ for tab, up in zip(tabs, files):
         if rep.skipped:
             st.caption("ชีตที่ข้าม: " + " · ".join(f"{n} ({why})" for n, why in rep.skipped))
 
+        # ---------- โครงตารางที่อ่านได้ ----------
+        with st.expander("โครงตารางที่ระบบอ่านได้จากชีต data (แถว/คอลัมน์ต่างกันตามไซต์)"):
+            if rep.structure:
+                st.dataframe(pd.DataFrame(rep.structure), use_container_width=True, hide_index=True)
+                st.caption("ระบบไม่ได้ยึดตำแหน่งแถว/คอลัมน์ตายตัว แต่หาโครงจากหัวตารางและป้ายกำกับในไฟล์ "
+                           "ถ้าตารางนี้ตรงกับไฟล์จริง แปลว่าอ่านโครงถูกต้อง")
+            else:
+                st.warning("อ่านโครงตารางไม่ได้ — ตรวจไฟล์นี้ด้วยตาไปก่อน")
+
         # ---------- ยอดรวมคนและรถ ----------
         if rep.key_totals:
             st.markdown("#### ยอดรวมคนและรถที่ตรวจได้จากชีต data")
