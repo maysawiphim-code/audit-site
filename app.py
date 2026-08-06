@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 import checker
+import teamsheet
 
 st.set_page_config(page_title="ตรวจรายงานจับตัวเลข", page_icon="📋", layout="wide")
 
@@ -148,6 +149,44 @@ for tab, up in zip(tabs, files):
             if st.button("โหลดรูป", key=f"img-{up.name}"):
                 for r_ in checker.check_images(raw, up.name, rep):
                     st.image(r_["image"], caption=f"รูปที่ {r_['index']}", use_container_width=True)
+
+        # ---------- ไฟล์หัวหน้าทีม ----------
+        st.markdown("#### เทียบกับไฟล์บันทึกของหัวหน้าทีม")
+        st.caption("อัปโหลดไฟล์รายชั่วโมงของหัวหน้าทีม ระบบจะหาชั่วโมงที่ยอดตก (ดิป) เกิน 20% "
+                   "แล้วเทียบว่าดิปตกที่ชั่วโมงเดียวกับไฟล์รายงานหรือไม่ และยอดรายชั่วโมงต่างกันกี่ %")
+        col_a, col_b = st.columns([3, 1])
+        team_file = col_a.file_uploader("ไฟล์หัวหน้าทีม (.xls / .xlsx)", type=["xls", "xlsx", "xlsm"],
+                                        key=f"team-{up.name}")
+        thr = col_b.slider("เกณฑ์ %", 5, 50, 20, 5, key=f"thr-{up.name}") / 100
+        if team_file:
+            try:
+                team = teamsheet.parse_team_sheet(team_file.getvalue(), team_file.name)
+                rep_hours = teamsheet.report_hourly(rep)
+                cmp_ = teamsheet.compare(team, rep_hours, threshold=thr, gap=thr)
+            except Exception as e:                # noqa: BLE001
+                cmp_ = {}
+                st.error(f"อ่านไฟล์หัวหน้าทีมไม่ได้: {e}")
+            if not cmp_:
+                st.warning("จับคู่ตารางรายชั่วโมงของสองไฟล์ไม่ได้ — ตรวจว่าไฟล์หัวหน้าทีมมีคอลัมน์ "
+                           "\"ชม.\" และ \"ผลต่างรายชั่วโมง\" ครบทั้งสามผลัด")
+            else:
+                st.caption(f"ไฟล์หัวหน้าทีมมี {len(team['days'])} วัน · เทียบกับตารางรายชั่วโมงในชีต "
+                           f"{rep_hours['sheet']} จำนวน {len(cmp_['hours'])} ชั่วโมง")
+                for kind, res in cmp_["kinds"].items():
+                    st.markdown(f"**{kind}** — ยอดรวมรายชั่วโมง หัวหน้าทีม {res['total_team']:,} · "
+                                f"ไฟล์รายงาน {res['total_report']:,}")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("ดิปที่ตรงกัน", len(res["both"]))
+                    m2.metric("ดิปเฉพาะไฟล์หัวหน้าทีม", len(res["only_team"]))
+                    m3.metric("ดิปเฉพาะไฟล์รายงาน", len(res["only_report"]))
+                    m4.metric(f"ชั่วโมงที่ต่างเกิน {int(thr*100)}%", len(res["big_gap"]))
+                    if res["big_gap"]:
+                        st.error("ชั่วโมงที่ยอดสองไฟล์ต่างกันเกินเกณฑ์: "
+                                 + ", ".join(f'{x["ชั่วโมง"]} ({x["ต่าง %"]:+.1f}%)' for x in res["big_gap"]))
+                    elif not res["only_team"] and not res["only_report"]:
+                        st.success("ยอดรายชั่วโมงและตำแหน่งดิปของสองไฟล์สอดคล้องกัน")
+                    with st.expander(f"ดูตารางรายชั่วโมงของ{kind}"):
+                        st.dataframe(pd.DataFrame(res["rows"]), use_container_width=True, hide_index=True)
 
         # ---------- ดูข้อมูลในชีต ----------
         st.markdown("#### ดูข้อมูลในชีต")
