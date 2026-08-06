@@ -1,5 +1,6 @@
 """เว็บแอปตรวจไฟล์รายงานจับตัวเลข — รันด้วย:  streamlit run app.py"""
 import io
+import re
 
 import pandas as pd
 import streamlit as st
@@ -153,7 +154,7 @@ for tab, up in zip(tabs, files):
         names = [s.name for s in rep.sheets]
         pick = st.selectbox("เลือกชีต", names, key=f"sel-{up.name}")
         sh = next(s for s in rep.sheets if s.name == pick)
-        flagged = {i.cell: i.sev for i in rep.issues if i.sheet == pick}
+        flagged = {i.cell: i.sev for i in rep.issues if i.sheet == pick and i.cell}
         width = max((len(r) for r in sh.grid), default=0)
         df = pd.DataFrame([[("" if v is None else v) for v in (row + [None] * (width - len(row)))]
                            for row in sh.grid[:300]],
@@ -163,14 +164,19 @@ for tab, up in zip(tabs, files):
         def paint(_):
             style = pd.DataFrame("", index=df.index, columns=df.columns)
             for cell, sev in flagged.items():
-                col = "".join(ch for ch in cell if ch.isalpha())
-                row = int("".join(ch for ch in cell if ch.isdigit()))
+                m = re.fullmatch(r"([A-Z]+)(\d+)", str(cell).strip())
+                if not m:                      # ปัญหาที่ไม่ผูกกับเซลล์ เช่น กล่องข้อความ/กราฟ
+                    continue
+                col, row = m.group(1), int(m.group(2))
                 if col in style.columns and row in style.index:
                     style.loc[row, col] = ("background-color:#FF6B5A33;color:#FF6B5A"
                                            if sev == "bad" else "background-color:#FFC53D33;color:#B98600")
             return style
 
-        st.dataframe(df.style.apply(paint, axis=None), use_container_width=True, height=420)
+        if df.empty:
+            st.info("ชีตนี้ไม่มีข้อมูลในตาราง")
+        else:
+            st.dataframe(df.style.apply(paint, axis=None), use_container_width=True, height=420)
         if len(sh.grid) > 300:
             st.caption(f"แสดง 300 แถวแรกจากทั้งหมด {len(sh.grid)} แถว")
 
