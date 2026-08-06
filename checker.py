@@ -657,6 +657,80 @@ def check_summary_tables(sheet: Sheet, rep: Report):
                 f'แต่ชีตนี้ขาด: {", ".join(sorted(missing))} — ยอดรวมของหมวดนี้จึงน้อยกว่าความจริง')
 
 
+def check_narrative(sheet: Sheet, rep: Report, hourly: dict | None = None):
+    """ตรวจว่าคำอธิบายใต้หัวข้อตรงกับตัวเลขในตารางของชีตเดียวกันหรือไม่"""
+    grid, name = sheet.grid, sheet.name
+    add = lambda sev, r, c, title, detail: rep.issues.append(
+        Issue(name, a1(r, c), sev, title, detail, exempt_color=True))
+    core = lambda t: re.sub(r"\(.*?\)|\s", "", S(t))
+
+    # รายการ (ชื่อ, %สัดส่วน) ในชีตนี้ — ตัดแถวหัวหมวดที่เป็น 100% ออก
+    items = []
+    for r, row in enumerate(grid):
+        label = ""
+        for v in row:
+            if isinstance(v, str) and S(v) and not label:
+                label = S(v)
+                continue
+            if label and isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 0.999:
+                items.append({"row": r, "label": label, "core": core(label), "pct": float(v)})
+                break
+    # จัดกลุ่มรายการที่อยู่ติดกัน = หมวดเดียวกัน
+    for i, it in enumerate(items):
+        it["grp"] = 0 if i == 0 else (items[i - 1]["grp"] + (1 if it["row"] - items[i - 1]["row"] > 1 else 0))
+
+    def group_of(it):
+        return [x for x in items if x["grp"] == it["grp"]]
+
+    for r, row in enumerate(grid):
+        for c, raw in enumerate(row):
+            t = S(raw)
+            if len(t) < 12 or "%" not in t:
+                continue
+            flat = core(t)
+            matched = []
+            for ns in re.findall(r"(\d[\d,]*\.?\d*)\s*%", t):
+                p = float(ns.replace(",", "")) / 100
+                owners = [i for i in items if abs(i["pct"] - p) <= 0.0005]
+                if not owners:
+                    add("warn", r, c, "คำอธิบายอ้างตัวเลขที่ไม่มีในตาราง",
+                        f'ข้อความ "{t[:70]}" ระบุ {ns}% แต่ไม่พบสัดส่วนนี้ในตารางของชีตนี้')
+                    continue
+                hit = next((o for o in owners if o["core"] and o["core"] in flat), None)
+                if hit is None:
+                    add("bad", r, c, "คำอธิบายอ้างรายการไม่ตรงกับตาราง",
+                        f'ข้อความ "{t[:70]}" ระบุ {ns}% ซึ่งในตารางเป็นสัดส่วนของ "{owners[0]["label"]}" '
+                        f'(แถว {owners[0]["row"] + 1}) แต่ข้อความไม่ได้พูดถึงรายการนี้')
+                    continue
+                matched.append(hit)
+
+            if matched and re.search(r"ส่วนใหญ่|มากที่สุด|เยอะที่สุด", t):
+                top = max(group_of(matched[0]), key=lambda i: i["pct"])
+                if top["core"] not in flat and top["pct"] > max(m["pct"] for m in matched) + 0.0005:
+                    add("bad", r, c, "คำอธิบายไม่ตรงกับค่าสูงสุดในตาราง",
+                        f'ข้อความ "{t[:70]}" บอกว่าเป็นส่วนใหญ่ แต่ค่าสูงสุดของหมวดนี้คือ '
+                        f'"{top["label"]}" {top["pct"] * 100:.2f}%')
+
+            if len(matched) >= 2 and re.search(r"ไม่แตกต่างกัน|ใกล้เคียงกัน", t):
+                hi, lo = max(matched, key=lambda i: i["pct"]), min(matched, key=lambda i: i["pct"])
+                if hi["pct"] - lo["pct"] > 0.20:
+                    add("bad", r, c, "คำอธิบายไม่ตรงกับตาราง",
+                        f'ข้อความ "{t[:60]}" บอกว่าไม่แตกต่างกัน แต่ "{hi["label"]}" {hi["pct"] * 100:.2f}% '
+                        f'กับ "{lo["label"]}" {lo["pct"] * 100:.2f}% ต่างกันมาก')
+
+            m = re.search(r"(\d{1,2})[:.]\d{2}\s*-\s*(\d{1,2})[:.]\d{2}", t)
+            if m and hourly and re.search(r"เยอะ|มาก", t):
+                kind = "cars" if "รถ" in t else "people"
+                series, hours = hourly.get(kind) or [], hourly.get("hours") or []
+                if series and hours and max(series) > 0:
+                    peak = hours[series.index(max(series))]
+                    ph = int(peak[:2])
+                    if not (int(m.group(1)) <= ph <= int(m.group(2))):
+                        add("warn", r, c, "ช่วงเวลาในคำอธิบายไม่ตรงกับตารางรายชั่วโมง",
+                            f'ข้อความ "{t[:60]}" ระบุช่วงเวลาที่มีปริมาณมาก '
+                            f'แต่ชั่วโมงที่มีค่าสูงสุดในตารางคือ {peak}')
+
+
 MONTHS = "มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม"
 
 
@@ -725,6 +799,11 @@ def audit(data: bytes, filename: str) -> Report:
         if "สรุป" in sh.name and rep.numbers:
             check_summary(sh, rep)
             check_summary_tables(sh, rep)
+            try:
+                import teamsheet
+                check_narrative(sh, rep, teamsheet.report_hourly(rep))
+            except Exception:
+                check_narrative(sh, rep, None)
 
     # เตือนถ้าอ่านโครงตารางไม่ได้ (แถว/คอลัมน์ของแต่ละไซต์ไม่เหมือนกัน)
     if data_sheet is not None and not rep.key_totals:
