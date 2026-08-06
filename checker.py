@@ -657,7 +657,7 @@ def check_titles(sheet: Sheet, rep: Report):
             t = S(raw)
             if len(t) < 10:
                 continue
-            if rep.site and re.search(r"ทำเลเป้าหมาย|ตารางสรุปผล|แผนที่", t):
+            if rep.site and re.search(r"ทำเลเป้าหมาย|สรุปผลการจับตัวเลข|^แผนที่\s", t):
                 key = norm(rep.site)[:10]
                 if len(key) >= 4 and key not in norm(t):
                     add("bad", r, c, "ชื่อทำเลในหัวเรื่องไม่ตรง",
@@ -701,7 +701,8 @@ def audit(data: bytes, filename: str) -> Report:
         for cell, err in sh.errors.items():
             rep.issues.append(Issue(sh.name, cell, "bad", "สูตรคำนวณผิดพลาด",
                                     f"เซลล์แสดงค่า {err} — สูตรอ้างอิงเซลล์ที่ถูกลบหรือหารด้วยศูนย์"))
-        check_titles(sh, rep)
+        if sh.name.startswith("แผนที่") or "สรุป" in sh.name:
+            check_titles(sh, rep)
         if sh is data_sheet:
             continue
         if not any(isinstance(v, (int, float)) and not isinstance(v, bool) for row in sh.grid for v in row):
@@ -916,8 +917,9 @@ def check_shapes(data: bytes, filename: str, rep: Report) -> list:
     results = []
     for sh in read_shapes(data, filename):
         text = sh["text"]
-        body = re.sub(r"\d[\d,]*\.?\d*\s*%", " ", text)     # ตัดค่าเปอร์เซ็นต์ออก
-        nums = [float(n.replace(",", "")) for n in re.findall(r"\d[\d,]*\.?\d*", body)]
+        # นับเฉพาะตัวเลขที่ตามด้วยหน่วย "คน" หรือ "คัน" เท่านั้น เลขอื่นในข้อความไม่ใช่ยอดรวม
+        nums = [float(n.replace(",", ""))
+                for n in re.findall(r"(\d[\d,]*\.?\d*)\s*(?:คน|คัน)", text)]
         nums = [n for n in nums if n >= 2]
         if not nums:
             continue
@@ -941,22 +943,11 @@ def check_shapes(data: bytes, filename: str, rep: Report) -> list:
             if near(got, near_by["value"]) or abs(near_by["value"] - got) <= max(abs(near_by["value"]) * 0.10, 1):
                 best = near_by
             else:
-                if got < 10:            # ตัวเลขเล็ก ๆ ในข้อความทั่วไป ไม่ใช่ยอดรวม
-                    continue
-                results.append({**sh, "value": got, "expect": None,
-                                "status": "ไม่พบยอดที่ตรงกันในชีต data"})
-                rep.issues.append(Issue(
-                    sh["sheet"], "", "warn", "กล่องข้อความมียอดที่ไม่มีในชีต data",
-                    f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" มีตัวเลข {fmt(got)} '
-                    f'ซึ่งไม่ตรงกับยอดรวมใดในชีต data — ตรวจว่าเป็นข้อความค้างจากงานเดิมหรือไม่'))
+                # ไม่ตรงกับยอดใดเลย = กล่องเทมเพลตที่ไม่ได้ใช้ในรายงานนี้ ข้ามไป
+                results.append({**sh, "value": got, "expect": None, "status": "ไม่ได้ใช้ในรายงานนี้"})
                 continue
         if abs(got - best["value"]) > max(abs(best["value"]) * 0.25, 1):
-            results.append({**sh, "value": got, "expect": None,
-                            "status": "ไม่พบยอดที่ตรงกันในชีต data"})
-            rep.issues.append(Issue(
-                sh["sheet"], "", "warn", "กล่องข้อความมียอดที่ไม่มีในชีต data",
-                f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" มีตัวเลข {fmt(got)} '
-                f'ซึ่งไม่ตรงกับยอดรวมใดในชีต data — ตรวจว่าเป็นข้อความค้างจากงานเดิมหรือไม่'))
+            results.append({**sh, "value": got, "expect": None, "status": "ไม่ได้ใช้ในรายงานนี้"})
             continue
         ok = near(got, best["value"])
         results.append({**sh, "value": got, "expect": best,
