@@ -1056,66 +1056,80 @@ def _clean_label(t: str) -> str:
     return t
 
 
+ANTI = [("เข้า", "ออก"), ("ซ้าย", "ขวา"), ("ตรงข้าม", "หน้าฝั่ง")]
+
+
 def check_shapes(data: bytes, filename: str, rep: Report) -> list:
-    """ตรวจตัวเลขในกล่องข้อความบนชีตแผนที่/สรุป ว่าตรงกับยอดรวมในชีต data หรือไม่"""
+    """ตรวจตัวเลขในกล่องข้อความบนชีตแผนที่/สรุป ว่าตรงกับยอดรวมในชีต data หรือไม่
+
+    จับคู่ด้วยหน่วย (คน/คัน) ก่อน แล้วกรองด้วยคำที่ตรงข้ามกัน (เข้า/ออก, ซ้าย/ขวา,
+    หน้าฝั่ง/ตรงข้าม) เพื่อไม่ให้กล่อง "รถเข้า" ไปจับคู่กับยอด "รถออก" ที่บังเอิญเลขตรงกัน
+    """
     import difflib
 
     keys = rep.key_totals
     if not keys:
         return []
-    # ถ้ารายงานมีหลายวัน ตัวเลขบนแผนที่จะเป็นค่าเฉลี่ย จึงเทียบกับกลุ่ม "เฉลี่ย" ก่อน
     avg = [k for k in keys if "เฉลี่ย" in k["group"]]
     pool = avg or keys
-    grand_car = next((k for k in pool if "ทั้งหมด" in k["label"]), None)
-    people = [k for k in pool if "คน" in k["label"]]
-    grand_people = max(people, key=lambda k: k["value"]) if people else None
+
+    DISC = ("เข้า", "ออก", "ตรงข้าม", "หน้าฝั่ง", "ซ้าย", "ขวา")
+
+    def candidates(text: str, unit: str):
+        kind = "คน" if unit == "คน" else "รถ"
+        out = [k for k in pool if kind in k["label"]]
+        if any(w in text for w in DISC):     # ระบุจุดชัดเจน = ไม่ใช่ยอดรวมทั้งหมด
+            out = [k for k in out if "ทั้งหมด" not in k["label"]] or out
+        for a, b in ANTI:                      # คำที่ตรงข้ามกันต้องไม่สลับกัน
+            if a in text and b not in text:
+                out = [k for k in out if not (b in k["label"] and a not in k["label"])] or out
+            if b in text and a not in text:
+                out = [k for k in out if not (a in k["label"] and b not in k["label"])] or out
+        return out
 
     results = []
     for sh in read_shapes(data, filename):
         text = sh["text"]
-        # นับเฉพาะตัวเลขที่ตามด้วยหน่วย "คน" หรือ "คัน" เท่านั้น เลขอื่นในข้อความไม่ใช่ยอดรวม
-        nums = [float(n.replace(",", ""))
-                for n in re.findall(r"(\d[\d,]*\.?\d*)\s*(?:คน|คัน)", text)]
-        nums = [n for n in nums if n >= 2]
-        if not nums:
+        pairs = [(float(n.replace(",", "")), u)
+                 for n, u in re.findall(r"(\d[\d,]*\.?\d*)\s*(คน|คัน)", text)]
+        pairs = [(v, u) for v, u in pairs if v >= 2]
+        if not pairs:
             continue
         label = _clean_label(text)
-        best, score = None, 0.0
-        if len(label) >= 4:
-            for k in pool:
-                r = difflib.SequenceMatcher(None, label, _clean_label(k["label"])).ratio()
-                if r > score:
-                    best, score = k, r
-            if score < 0.6:
-                best = None
-        if best is None:
-            if re.match(r"^(รถผ่าน|รถวิ่งผ่าน|รถ)$", label) and grand_car:
-                best = grand_car
-            elif re.match(r"^(คนผ่าน|คนเดินผ่าน|คน)$", label) and grand_people:
-                best = grand_people
-        got = min(nums, key=lambda n: abs(n - best["value"])) if best else max(nums)
-        if best is None:
-            near_by = min(pool, key=lambda k: abs(k["value"] - got))
-            if near(got, near_by["value"]) or abs(near_by["value"] - got) <= max(abs(near_by["value"]) * 0.10, 1):
-                best = near_by
-            else:
-                # ไม่ตรงกับยอดใดเลย = กล่องเทมเพลตที่ไม่ได้ใช้ในรายงานนี้ ข้ามไป
+        for got, unit in pairs:
+            cands = candidates(text, unit)
+            if not cands:
                 results.append({**sh, "value": got, "expect": None, "status": "ไม่ได้ใช้ในรายงานนี้"})
                 continue
-        if abs(got - best["value"]) > max(abs(best["value"]) * 0.25, 1):
-            results.append({**sh, "value": got, "expect": None, "status": "ไม่ได้ใช้ในรายงานนี้"})
-            continue
-        ok = near(got, best["value"])
-        results.append({**sh, "value": got, "expect": best,
-                        "status": "ตรง" if ok else "ไม่ตรง"})
-        if ok:
-            rep.passed.append((sh["sheet"], f'กล่องข้อความ "{text[:40]}" ตรงกับ {best["label"]} = {fmt(best["value"])}'))
-        else:
-            rep.issues.append(Issue(
-                sh["sheet"], "", "bad", "ตัวเลขในกล่องข้อความไม่ตรงกับชีต data",
-                f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" ใส่ค่า {fmt(got)} '
-                f'แต่ยอดจริงคือ {best["label"]} = {fmt(best["value"])} (ชีต {rep.data_name} เซลล์ {best["cell"]}) '
-                f'— ต่าง {fmt(got - best["value"])}'))
+            best, score = None, 0.0
+            if len(label) >= 3:
+                for k in cands:
+                    r = difflib.SequenceMatcher(None, label, _clean_label(k["label"])).ratio()
+                    if r > score:
+                        best, score = k, r
+            if score < 0.5:
+                if len(label) < 3:                       # กล่องที่มีแต่ตัวเลข ไม่มีชื่อรายการ
+                    best = min(cands, key=lambda k: abs(k["value"] - got))
+                elif any(w in text for w in DISC):
+                    best = min(cands, key=lambda k: abs(k["value"] - got))
+                else:
+                    grand = [k for k in cands if "ทั้งหมด" in k["label"]]
+                    best = grand[0] if grand and len(cands) > 1 else (
+                        cands[0] if len(cands) == 1 else min(cands, key=lambda k: abs(k["value"] - got)))
+            if abs(got - best["value"]) > max(abs(best["value"]) * 0.40, 1):
+                results.append({**sh, "value": got, "expect": None, "status": "ไม่ได้ใช้ในรายงานนี้"})
+                continue
+            ok = near(got, best["value"])
+            results.append({**sh, "value": got, "expect": best, "status": "ตรง" if ok else "ไม่ตรง"})
+            if ok:
+                rep.passed.append((sh["sheet"],
+                                   f'กล่องข้อความ "{text[:40]}" ตรงกับ {best["label"]} = {fmt(best["value"])}'))
+            else:
+                rep.issues.append(Issue(
+                    sh["sheet"], "", "bad", "ตัวเลขในกล่องข้อความไม่ตรงกับชีต data",
+                    f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" ใส่ค่า {fmt(got)} '
+                    f'แต่ยอดจริงคือ {best["label"]} = {fmt(best["value"])} '
+                    f'(ชีต {rep.data_name} เซลล์ {best["cell"]}) — ต่าง {fmt(got - best["value"])}'))
     return results
 
 
