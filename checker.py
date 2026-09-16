@@ -76,8 +76,9 @@ class Sheet:
     name: str
     hidden: bool
     grid: list
-    fills: dict = field(default_factory=dict)   # "A1" -> "FFCC99"
-    errors: dict = field(default_factory=dict)  # "A1" -> "#DIV/0!"
+    fills: dict = field(default_factory=dict)         # "A1" -> "FFCC99" (สีพื้นเซลล์)
+    font_colors: dict = field(default_factory=dict)    # "A1" -> "FF0000" (สีตัวอักษร)
+    errors: dict = field(default_factory=dict)         # "A1" -> "#DIV/0!"
 
 
 @dataclass
@@ -123,7 +124,7 @@ def _read_xls(data: bytes) -> list:
     cmap = book.colour_map
     out = []
     for sh in book.sheets():
-        grid, fills, errors = [], {}, {}
+        grid, fills, font_colors, errors = [], {}, {}, {}
         for r in range(sh.nrows):
             row = []
             for c in range(sh.ncols):
@@ -141,8 +142,13 @@ def _read_xls(data: bytes) -> list:
                     rgb = cmap.get(bg.pattern_colour_index)
                     if rgb and rgb != (255, 255, 255):
                         fills[a1(r, c)] = "%02X%02X%02X" % rgb
+                # สีตัวอักษร (ไม่ใช่สีพื้น) — ใช้ตรวจกรณีไฮไลต์ด้วยสีข้อความแทนสีพื้น
+                font = book.font_list[xf.font_index]
+                frgb = cmap.get(font.colour_index)
+                if frgb and frgb not in ((0, 0, 0), (255, 255, 255)):
+                    font_colors[a1(r, c)] = "%02X%02X%02X" % frgb
             grid.append(row)
-        out.append(Sheet(sh.name, sh.visibility != 0, grid, fills, errors))
+        out.append(Sheet(sh.name, sh.visibility != 0, grid, fills, font_colors, errors))
     return out
 
 
@@ -152,7 +158,7 @@ def _read_xlsx(data: bytes) -> list:
     wb = load_workbook(io.BytesIO(data), data_only=True)
     out = []
     for ws in wb.worksheets:
-        grid, fills, errors = [], {}, {}
+        grid, fills, font_colors, errors = [], {}, {}, {}
         for r, row in enumerate(ws.iter_rows()):
             vals = []
             for c, cell in enumerate(row):
@@ -168,8 +174,16 @@ def _read_xlsx(data: bytes) -> list:
                         rgb = rgb[-6:].upper()
                         if rgb != "FFFFFF":
                             fills[a1(r, c)] = rgb
+                # สีตัวอักษร (ไม่ใช่สีพื้น) — ใช้ตรวจกรณีไฮไลต์ด้วยสีข้อความแทนสีพื้น
+                fo = cell.font
+                color = getattr(fo, "color", None) if fo is not None else None
+                rgb = getattr(color, "rgb", None) if color is not None else None
+                if isinstance(rgb, str) and len(rgb) >= 6:
+                    rgb = rgb[-6:].upper()
+                    if rgb not in ("FFFFFF", "000000"):
+                        font_colors[a1(r, c)] = rgb
             grid.append(vals)
-        out.append(Sheet(ws.title, ws.sheet_state != "visible", grid, fills, errors))
+        out.append(Sheet(ws.title, ws.sheet_state != "visible", grid, fills, font_colors, errors))
     return out
 
 
@@ -869,10 +883,10 @@ def audit(data: bytes, filename: str) -> Report:
                                 "ไม่พบแถวยอดรวมของคน/รถ จึงยังไม่ได้ตรวจยอดรวมของไฟล์นี้ — "
                                 "โครงตารางอาจต่างจากที่ระบบรู้จัก ให้ตรวจด้วยตาไปก่อน"))
 
-    # ตรวจเฉพาะช่องที่ใส่สีไว้ในไฟล์
-    fills = {s.name: s.fills for s in visible}
+    # ตรวจเฉพาะช่องที่ใส่สีไว้ในไฟล์ — นับทั้งสีพื้นเซลล์และสีตัวอักษร (ไฮไลต์ด้วยฟอนต์สีก็นับ)
+    colored = {s.name: {**s.fills, **s.font_colors} for s in visible}
     rep.issues = [i for i in rep.issues
-                  if i.exempt_color or not i.cell or fills.get(i.sheet, {}).get(i.cell)]
+                  if i.exempt_color or not i.cell or colored.get(i.sheet, {}).get(i.cell)]
     return rep
 
 
