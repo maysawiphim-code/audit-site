@@ -648,18 +648,20 @@ def check_summary(sheet: Sheet, rep: Report):
                          f'ข้อความสรุปยังเป็นจุดไข่ปลา ต้องเติมก่อนส่งงาน: "{t[:70]}"')
             for ns in re.findall(r"\d[\d,]*\.?\d*", t):
                 v = float(ns.replace(",", ""))
-                if v < 100:
-                    continue
                 if f"{ns}%" in t:
-                    if not any(near(b, v / 100, PTOL) for b in rep.numbers):
+                    if v < 100 and not any(near(b, v / 100, PTOL) for b in rep.numbers):
                         add_text("warn", r, c, "ตัวเลขในข้อความไม่ตรง",
                             f"ข้อความระบุ {ns}% แต่ไม่พบสัดส่วนนี้ในชีต data")
+                    continue
+                unit = "คน" if re.search(re.escape(ns) + r"\s*คน", t) else (
+                    "คัน" if re.search(re.escape(ns) + r"\s*คัน", t) else "")
+                # เลขที่ไม่มีหน่วยกำกับ (คน/คัน) และน้อยกว่า 100 มักเป็นเลขลำดับข้อ/อื่น ๆ ข้ามได้
+                # แต่ถ้ามีหน่วยกำกับชัดเจน ต้องตรวจเสมอแม้ค่าจะน้อย (เช่น ยอดคนเดินเท้าที่มักน้อยกว่า 100)
+                if not unit and v < 100:
                     continue
                 if 2500 < v < 2600:
                     continue
                 if not any(near(b, v) for b in rep.numbers):
-                    unit = "คน" if re.search(re.escape(ns) + r"\s*คน", t) else (
-                        "คัน" if re.search(re.escape(ns) + r"\s*คัน", t) else "")
                     exp = expected_for(unit, v) if unit else None
                     if exp:
                         add_text("bad", r, c, "ยอดในข้อความสรุปไม่ตรงกับตาราง",
@@ -761,18 +763,24 @@ def check_narrative(sheet: Sheet, rep: Report, hourly: dict | None = None):
                 continue
             flat = core(t)
             matched = []
-            for ns in re.findall(r"(\d[\d,]*\.?\d*)\s*%", t):
+            prev_end = 0
+            for m in re.finditer(r"(\d[\d,]*\.?\d*)\s*%", t):
+                ns = m.group(1)
                 p = float(ns.replace(",", "")) / 100
+                # เทียบชื่อรายการเฉพาะช่วงข้อความ "ก่อนหน้า" ตัวเลขนี้ (ไม่รวมทั้งประโยค)
+                # กันกรณีชื่อรายการอื่นที่อยู่ถัดไปในประโยคดันไปจับคู่กับตัวเลขก่อนหน้าผิด ๆ
+                local = core(t[prev_end:m.end()])
+                prev_end = m.end()
                 owners = [i for i in items if abs(i["pct"] - p) <= 0.0005]
                 if not owners:
                     add("warn", r, c, "คำอธิบายอ้างตัวเลขที่ไม่มีในตาราง",
                         f'ข้อความ "{t[:70]}" ระบุ {ns}% แต่ไม่พบสัดส่วนนี้ในตารางของชีตนี้')
                     continue
-                hit = next((o for o in owners if o["core"] and o["core"] in flat), None)
+                hit = next((o for o in owners if o["core"] and o["core"] in local), None)
                 if hit is None:
                     add("bad", r, c, "คำอธิบายอ้างรายการไม่ตรงกับตาราง",
-                        f'ข้อความ "{t[:70]}" ระบุ {ns}% ซึ่งในตารางเป็นสัดส่วนของ "{owners[0]["label"]}" '
-                        f'(แถว {owners[0]["row"] + 1}) แต่ข้อความไม่ได้พูดถึงรายการนี้')
+                        f'ข้อความ "{t[:70]}" ระบุ {ns}% ติดกับรายการอื่น แต่ในตาราง {ns}% เป็นสัดส่วนของ '
+                        f'"{owners[0]["label"]}" (แถว {owners[0]["row"] + 1}) — ตัวเลขกับชื่อรายการอาจสลับกัน')
                     continue
                 matched.append(hit)
 
