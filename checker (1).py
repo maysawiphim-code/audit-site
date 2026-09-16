@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 TOL = 0.5        # คลาดเคลื่อนของจำนวนนับ
+DAY_FLAG = 0.30  # ผลต่างยอดรวมระหว่างสองวันเกินเท่านี้ = น่าสงสัย
 PTOL = 0.0015    # คลาดเคลื่อนของ %สัดส่วน
 VALKEYS = ["ผลัดเช้า", "ผลัดบ่าย", "ผลัดดึก", "รวมทั้งวัน", "%สัดส่วน"]
 SKIP_SHEETS = re.compile(r"^\s*สรุป\s*\(?\s*2\s*\)?\s*$")
@@ -94,6 +95,8 @@ class Report:
     key_totals: list = field(default_factory=list)  # ยอดรวมสำคัญไว้เทียบกับรูป
     categories: dict = field(default_factory=dict)  # หมวด -> รายการย่อยในชีต data
     structure: list = field(default_factory=list)   # โครงตารางที่อ่านได้ (แถว/คอลัมน์ต่างกันตามไซต์)
+    day_names: list = field(default_factory=list)   # ชื่อกลุ่มคอลัมน์รายวัน
+    day_rows: list = field(default_factory=list)    # เปรียบเทียบวันที่ 1 กับวันที่ 2
     numbers: list = field(default_factory=list)  # ตัวเลขทั้งหมดในตาราง data
 
     @property
@@ -483,6 +486,40 @@ def check_data(sheet: Sheet, rep: Report):
                         add("bad", row["r"], c, "ค่าติดลบ",
                             f'{gr["title"]} · {row["block"]} {row["item"]} ({key}) = {fmt(v)}')
 
+        # เก็บข้อมูลเปรียบเทียบรายวันไว้ทำแดชบอร์ด
+        day_groups = [g for g in t["groups"] if "วัน" in g["title"]]
+        if len(day_groups) >= 2:
+            if not rep.day_names:
+                rep.day_names = [g["title"] for g in day_groups]
+            keys = [k for _, k in day_groups[0]["keys"] if k != "%สัดส่วน"]
+            for row in rows:
+                label = (row["block"] + " " + row["item"]).strip()
+                for key in keys:
+                    vals = []
+                    for dg in day_groups:
+                        col = next((c for c, kk in dg["keys"] if kk == key), None)
+                        vals.append(num(grid[row["r"]][col]) if col is not None else None)
+                    if any(v is None for v in vals):
+                        continue
+                    rep.day_rows.append({
+                        "รายการ": label, "ประเภท": "คน" if "คน" in label else ("รถ" if "รถ" in label else "อื่น"),
+                        "ช่วง": key, "เป็นยอดรวม": row["is_total"],
+                        "values": vals,
+                        "ต่าง": vals[1] - vals[0],
+                        "ต่าง %": None if not vals[0] else round((vals[1] - vals[0]) / vals[0] * 100, 2),
+                    })
+
+        # ยอดรวมทั้งวันที่ต่างกันเกินเกณฑ์ = น่าสงสัย ให้ตรวจซ้ำ
+        for x in rep.day_rows:
+            if not x["เป็นยอดรวม"] or x["ช่วง"] != "รวมทั้งวัน" or x["ต่าง %"] is None:
+                continue
+            if abs(x["ต่าง %"]) > DAY_FLAG * 100 and max(x["values"]) >= 10:
+                rep.issues.append(Issue(
+                    name, "", "warn", "ผลต่างระหว่างสองวันสูงผิดปกติ",
+                    f'{x["รายการ"]} : {rep.day_names[0]} = {fmt(x["values"][0])} · '
+                    f'{rep.day_names[1]} = {fmt(x["values"][1])} — ต่างกัน {x["ต่าง %"]:+.1f}% '
+                    f'(เกินเกณฑ์ {int(DAY_FLAG * 100)}%) ควรตรวจสาเหตุ เช่น สภาพอากาศ วันหยุด หรือการนับผิดผลัด'))
+
         # 6) คอลัมน์เฉลี่ยของหลายวัน
         days = [g for g in t["groups"] if "วัน" in g["title"]]
         avg = next((g for g in t["groups"] if "เฉลี่ย" in g["title"]), None)
@@ -564,6 +601,17 @@ def check_hourly(sheet: Sheet, rep: Report) -> bool:
 def check_summary(sheet: Sheet, rep: Report):
     grid, name = sheet.grid, sheet.name
     add = lambda sev, r, c, title, detail: rep.issues.append(Issue(name, a1(r, c), sev, title, detail))
+    # ข้อความสรุป/หัวเรื่องไม่เคยถูกใส่สี จึงตรวจเสมอ
+    add_text = lambda sev, r, c, title, detail: rep.issues.append(
+        Issue(name, a1(r, c), sev, title, detail, exempt_color=True))
+
+    def expected_for(unit: str, got: float):
+        """ยอดรวมที่ควรจะเป็น สำหรับตัวเลขที่มีหน่วย คน/คัน"""
+        kind = "คน" if unit == "คน" else "รถ"
+        cands = [k for k in rep.key_totals if kind in k["label"]]
+        cands = [k for k in cands if "เฉลี่ย" in k["group"]] or cands   # หลายวัน = ใช้ค่าเฉลี่ย
+        cands = [k for k in cands if "ทั้งหมด" in k["label"]] or cands
+        return min(cands, key=lambda k: abs(k["value"] - got)) if cands else None
     checked = bad = 0
     for r, row in enumerate(grid):
         for c, raw in enumerate(row):
@@ -582,21 +630,33 @@ def check_summary(sheet: Sheet, rep: Report):
             if len(t) < 6:
                 continue
             if re.search(r"…|\.{5,}", t):
-                add("warn", r, c, "ยังไม่ได้เติมข้อความ", f'ข้อความสรุปยังเป็นจุดไข่ปลา: "{t[:60]}"')
+                add_text("bad", r, c, "ยังไม่ได้เติมข้อความ",
+                         f'ข้อความสรุปยังเป็นจุดไข่ปลา ต้องเติมก่อนส่งงาน: "{t[:70]}"')
             for ns in re.findall(r"\d[\d,]*\.?\d*", t):
                 v = float(ns.replace(",", ""))
-                if v < 100:
-                    continue
                 if f"{ns}%" in t:
-                    if not any(near(b, v / 100, PTOL) for b in rep.numbers):
-                        add("warn", r, c, "ตัวเลขในข้อความไม่ตรง",
+                    if v < 100 and not any(near(b, v / 100, PTOL) for b in rep.numbers):
+                        add_text("warn", r, c, "ตัวเลขในข้อความไม่ตรง",
                             f"ข้อความระบุ {ns}% แต่ไม่พบสัดส่วนนี้ในชีต data")
+                    continue
+                unit = "คน" if re.search(re.escape(ns) + r"\s*คน", t) else (
+                    "คัน" if re.search(re.escape(ns) + r"\s*คัน", t) else "")
+                # เลขที่ไม่มีหน่วยกำกับ (คน/คัน) และน้อยกว่า 100 มักเป็นเลขลำดับข้อ/อื่น ๆ ข้ามได้
+                # แต่ถ้ามีหน่วยกำกับชัดเจน ต้องตรวจเสมอแม้ค่าจะน้อย (เช่น ยอดคนเดินเท้าที่มักน้อยกว่า 100)
+                if not unit and v < 100:
                     continue
                 if 2500 < v < 2600:
                     continue
                 if not any(near(b, v) for b in rep.numbers):
-                    add("bad", r, c, "ตัวเลขในข้อความไม่ตรง",
-                        f"ข้อความสรุประบุ {ns} แต่ไม่พบตัวเลขนี้ในชีต data")
+                    exp = expected_for(unit, v) if unit else None
+                    if exp:
+                        add_text("bad", r, c, "ยอดในข้อความสรุปไม่ตรงกับตาราง",
+                                 f'ข้อความ "{t[:60]}" ระบุ {ns} {unit} แต่ยอดจริงคือ '
+                                 f'{fmt(exp["value"])} ({exp["label"]}) — ต่าง {fmt(v - exp["value"])} '
+                                 f'ให้แก้ตัวเลขในข้อความให้ตรงกับตาราง')
+                    else:
+                        add_text("bad", r, c, "ตัวเลขในข้อความไม่ตรง",
+                                 f"ข้อความสรุประบุ {ns} แต่ไม่พบตัวเลขนี้ในชีต data")
     if checked and not bad:
         rep.passed.append((name, f"ตัวเลข {checked} ค่าตรงกับชีต data ทั้งหมด"))
 
@@ -655,6 +715,86 @@ def check_summary_tables(sheet: Sheet, rep: Report):
             add("bad", 0, 0, "ตารางสรุปมีรายการไม่ครบ",
                 f'หมวด "{cat}" ในชีต {rep.data_name} มี {len(items)} รายการ '
                 f'แต่ชีตนี้ขาด: {", ".join(sorted(missing))} — ยอดรวมของหมวดนี้จึงน้อยกว่าความจริง')
+
+
+def check_narrative(sheet: Sheet, rep: Report, hourly: dict | None = None):
+    """ตรวจว่าคำอธิบายใต้หัวข้อตรงกับตัวเลขในตารางของชีตเดียวกันหรือไม่"""
+    grid, name = sheet.grid, sheet.name
+    add = lambda sev, r, c, title, detail: rep.issues.append(
+        Issue(name, a1(r, c), sev, title, detail, exempt_color=True))
+    core = lambda t: re.sub(r"\(.*?\)|\s", "", S(t))
+
+    # รายการ (ชื่อ, %สัดส่วน) ในชีตนี้ — ตัดแถวหัวหมวดที่เป็น 100% ออก
+    items = []
+    for r, row in enumerate(grid):
+        label = ""
+        for v in row:
+            if isinstance(v, str) and S(v) and not label:
+                label = S(v)
+                continue
+            if label and isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 0.999:
+                items.append({"row": r, "label": label, "core": core(label), "pct": float(v)})
+                break
+    # จัดกลุ่มรายการที่อยู่ติดกัน = หมวดเดียวกัน
+    for i, it in enumerate(items):
+        it["grp"] = 0 if i == 0 else (items[i - 1]["grp"] + (1 if it["row"] - items[i - 1]["row"] > 1 else 0))
+
+    def group_of(it):
+        return [x for x in items if x["grp"] == it["grp"]]
+
+    for r, row in enumerate(grid):
+        for c, raw in enumerate(row):
+            t = S(raw)
+            if len(t) < 12 or "%" not in t:
+                continue
+            flat = core(t)
+            matched = []
+            prev_end = 0
+            for m in re.finditer(r"(\d[\d,]*\.?\d*)\s*%", t):
+                ns = m.group(1)
+                p = float(ns.replace(",", "")) / 100
+                # เทียบชื่อรายการเฉพาะช่วงข้อความ "ก่อนหน้า" ตัวเลขนี้ (ไม่รวมทั้งประโยค)
+                # กันกรณีชื่อรายการอื่นที่อยู่ถัดไปในประโยคดันไปจับคู่กับตัวเลขก่อนหน้าผิด ๆ
+                local = core(t[prev_end:m.end()])
+                prev_end = m.end()
+                owners = [i for i in items if abs(i["pct"] - p) <= 0.0005]
+                if not owners:
+                    add("warn", r, c, "คำอธิบายอ้างตัวเลขที่ไม่มีในตาราง",
+                        f'ข้อความ "{t[:70]}" ระบุ {ns}% แต่ไม่พบสัดส่วนนี้ในตารางของชีตนี้')
+                    continue
+                hit = next((o for o in owners if o["core"] and o["core"] in local), None)
+                if hit is None:
+                    add("bad", r, c, "คำอธิบายอ้างรายการไม่ตรงกับตาราง",
+                        f'ข้อความ "{t[:70]}" ระบุ {ns}% ติดกับรายการอื่น แต่ในตาราง {ns}% เป็นสัดส่วนของ '
+                        f'"{owners[0]["label"]}" (แถว {owners[0]["row"] + 1}) — ตัวเลขกับชื่อรายการอาจสลับกัน')
+                    continue
+                matched.append(hit)
+
+            if matched and re.search(r"ส่วนใหญ่|มากที่สุด|เยอะที่สุด", t):
+                top = max(group_of(matched[0]), key=lambda i: i["pct"])
+                if top["core"] not in flat and top["pct"] > max(m["pct"] for m in matched) + 0.0005:
+                    add("bad", r, c, "คำอธิบายไม่ตรงกับค่าสูงสุดในตาราง",
+                        f'ข้อความ "{t[:70]}" บอกว่าเป็นส่วนใหญ่ แต่ค่าสูงสุดของหมวดนี้คือ '
+                        f'"{top["label"]}" {top["pct"] * 100:.2f}%')
+
+            if len(matched) >= 2 and re.search(r"ไม่แตกต่างกัน|ใกล้เคียงกัน", t):
+                hi, lo = max(matched, key=lambda i: i["pct"]), min(matched, key=lambda i: i["pct"])
+                if hi["pct"] - lo["pct"] > 0.20:
+                    add("bad", r, c, "คำอธิบายไม่ตรงกับตาราง",
+                        f'ข้อความ "{t[:60]}" บอกว่าไม่แตกต่างกัน แต่ "{hi["label"]}" {hi["pct"] * 100:.2f}% '
+                        f'กับ "{lo["label"]}" {lo["pct"] * 100:.2f}% ต่างกันมาก')
+
+            m = re.search(r"(\d{1,2})[:.]\d{2}\s*-\s*(\d{1,2})[:.]\d{2}", t)
+            if m and hourly and re.search(r"เยอะ|มาก", t):
+                kind = "cars" if "รถ" in t else "people"
+                series, hours = hourly.get(kind) or [], hourly.get("hours") or []
+                if series and hours and max(series) > 0:
+                    peak = hours[series.index(max(series))]
+                    ph = int(peak[:2])
+                    if not (int(m.group(1)) <= ph <= int(m.group(2))):
+                        add("warn", r, c, "ช่วงเวลาในคำอธิบายไม่ตรงกับตารางรายชั่วโมง",
+                            f'ข้อความ "{t[:60]}" ระบุช่วงเวลาที่มีปริมาณมาก '
+                            f'แต่ชั่วโมงที่มีค่าสูงสุดในตารางคือ {peak}')
 
 
 MONTHS = "มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม"
@@ -725,6 +865,11 @@ def audit(data: bytes, filename: str) -> Report:
         if "สรุป" in sh.name and rep.numbers:
             check_summary(sh, rep)
             check_summary_tables(sh, rep)
+            try:
+                import teamsheet
+                check_narrative(sh, rep, teamsheet.report_hourly(rep))
+            except Exception:
+                check_narrative(sh, rep, None)
 
     # เตือนถ้าอ่านโครงตารางไม่ได้ (แถว/คอลัมน์ของแต่ละไซต์ไม่เหมือนกัน)
     if data_sheet is not None and not rep.key_totals:
@@ -919,66 +1064,80 @@ def _clean_label(t: str) -> str:
     return t
 
 
+ANTI = [("เข้า", "ออก"), ("ซ้าย", "ขวา"), ("ตรงข้าม", "หน้าฝั่ง")]
+
+
 def check_shapes(data: bytes, filename: str, rep: Report) -> list:
-    """ตรวจตัวเลขในกล่องข้อความบนชีตแผนที่/สรุป ว่าตรงกับยอดรวมในชีต data หรือไม่"""
+    """ตรวจตัวเลขในกล่องข้อความบนชีตแผนที่/สรุป ว่าตรงกับยอดรวมในชีต data หรือไม่
+
+    จับคู่ด้วยหน่วย (คน/คัน) ก่อน แล้วกรองด้วยคำที่ตรงข้ามกัน (เข้า/ออก, ซ้าย/ขวา,
+    หน้าฝั่ง/ตรงข้าม) เพื่อไม่ให้กล่อง "รถเข้า" ไปจับคู่กับยอด "รถออก" ที่บังเอิญเลขตรงกัน
+    """
     import difflib
 
     keys = rep.key_totals
     if not keys:
         return []
-    # ถ้ารายงานมีหลายวัน ตัวเลขบนแผนที่จะเป็นค่าเฉลี่ย จึงเทียบกับกลุ่ม "เฉลี่ย" ก่อน
     avg = [k for k in keys if "เฉลี่ย" in k["group"]]
     pool = avg or keys
-    grand_car = next((k for k in pool if "ทั้งหมด" in k["label"]), None)
-    people = [k for k in pool if "คน" in k["label"]]
-    grand_people = max(people, key=lambda k: k["value"]) if people else None
+
+    DISC = ("เข้า", "ออก", "ตรงข้าม", "หน้าฝั่ง", "ซ้าย", "ขวา")
+
+    def candidates(text: str, unit: str):
+        kind = "คน" if unit == "คน" else "รถ"
+        out = [k for k in pool if kind in k["label"]]
+        if any(w in text for w in DISC):     # ระบุจุดชัดเจน = ไม่ใช่ยอดรวมทั้งหมด
+            out = [k for k in out if "ทั้งหมด" not in k["label"]] or out
+        for a, b in ANTI:                      # คำที่ตรงข้ามกันต้องไม่สลับกัน
+            if a in text and b not in text:
+                out = [k for k in out if not (b in k["label"] and a not in k["label"])] or out
+            if b in text and a not in text:
+                out = [k for k in out if not (a in k["label"] and b not in k["label"])] or out
+        return out
 
     results = []
     for sh in read_shapes(data, filename):
         text = sh["text"]
-        # นับเฉพาะตัวเลขที่ตามด้วยหน่วย "คน" หรือ "คัน" เท่านั้น เลขอื่นในข้อความไม่ใช่ยอดรวม
-        nums = [float(n.replace(",", ""))
-                for n in re.findall(r"(\d[\d,]*\.?\d*)\s*(?:คน|คัน)", text)]
-        nums = [n for n in nums if n >= 2]
-        if not nums:
+        pairs = [(float(n.replace(",", "")), u)
+                 for n, u in re.findall(r"(\d[\d,]*\.?\d*)\s*(คน|คัน)", text)]
+        pairs = [(v, u) for v, u in pairs if v >= 2]
+        if not pairs:
             continue
         label = _clean_label(text)
-        best, score = None, 0.0
-        if len(label) >= 4:
-            for k in pool:
-                r = difflib.SequenceMatcher(None, label, _clean_label(k["label"])).ratio()
-                if r > score:
-                    best, score = k, r
-            if score < 0.6:
-                best = None
-        if best is None:
-            if re.match(r"^(รถผ่าน|รถวิ่งผ่าน|รถ)$", label) and grand_car:
-                best = grand_car
-            elif re.match(r"^(คนผ่าน|คนเดินผ่าน|คน)$", label) and grand_people:
-                best = grand_people
-        got = min(nums, key=lambda n: abs(n - best["value"])) if best else max(nums)
-        if best is None:
-            near_by = min(pool, key=lambda k: abs(k["value"] - got))
-            if near(got, near_by["value"]) or abs(near_by["value"] - got) <= max(abs(near_by["value"]) * 0.10, 1):
-                best = near_by
-            else:
-                # ไม่ตรงกับยอดใดเลย = กล่องเทมเพลตที่ไม่ได้ใช้ในรายงานนี้ ข้ามไป
+        for got, unit in pairs:
+            cands = candidates(text, unit)
+            if not cands:
                 results.append({**sh, "value": got, "expect": None, "status": "ไม่ได้ใช้ในรายงานนี้"})
                 continue
-        if abs(got - best["value"]) > max(abs(best["value"]) * 0.25, 1):
-            results.append({**sh, "value": got, "expect": None, "status": "ไม่ได้ใช้ในรายงานนี้"})
-            continue
-        ok = near(got, best["value"])
-        results.append({**sh, "value": got, "expect": best,
-                        "status": "ตรง" if ok else "ไม่ตรง"})
-        if ok:
-            rep.passed.append((sh["sheet"], f'กล่องข้อความ "{text[:40]}" ตรงกับ {best["label"]} = {fmt(best["value"])}'))
-        else:
-            rep.issues.append(Issue(
-                sh["sheet"], "", "bad", "ตัวเลขในกล่องข้อความไม่ตรงกับชีต data",
-                f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" ใส่ค่า {fmt(got)} '
-                f'แต่ยอดจริงคือ {best["label"]} = {fmt(best["value"])} (ชีต {rep.data_name} เซลล์ {best["cell"]}) '
-                f'— ต่าง {fmt(got - best["value"])}'))
+            best, score = None, 0.0
+            if len(label) >= 3:
+                for k in cands:
+                    r = difflib.SequenceMatcher(None, label, _clean_label(k["label"])).ratio()
+                    if r > score:
+                        best, score = k, r
+            if score < 0.5:
+                if len(label) < 3:                       # กล่องที่มีแต่ตัวเลข ไม่มีชื่อรายการ
+                    best = min(cands, key=lambda k: abs(k["value"] - got))
+                elif any(w in text for w in DISC):
+                    best = min(cands, key=lambda k: abs(k["value"] - got))
+                else:
+                    grand = [k for k in cands if "ทั้งหมด" in k["label"]]
+                    best = grand[0] if grand and len(cands) > 1 else (
+                        cands[0] if len(cands) == 1 else min(cands, key=lambda k: abs(k["value"] - got)))
+            if abs(got - best["value"]) > max(abs(best["value"]) * 0.40, 1):
+                results.append({**sh, "value": got, "expect": None, "status": "ไม่ได้ใช้ในรายงานนี้"})
+                continue
+            ok = near(got, best["value"])
+            results.append({**sh, "value": got, "expect": best, "status": "ตรง" if ok else "ไม่ตรง"})
+            if ok:
+                rep.passed.append((sh["sheet"],
+                                   f'กล่องข้อความ "{text[:40]}" ตรงกับ {best["label"]} = {fmt(best["value"])}'))
+            else:
+                rep.issues.append(Issue(
+                    sh["sheet"], "", "bad", "ตัวเลขในกล่องข้อความไม่ตรงกับชีต data",
+                    f'ชีต {sh["sheet"]} · กล่องข้อความ "{text[:60]}" ใส่ค่า {fmt(got)} '
+                    f'แต่ยอดจริงคือ {best["label"]} = {fmt(best["value"])} '
+                    f'(ชีต {rep.data_name} เซลล์ {best["cell"]}) — ต่าง {fmt(got - best["value"])}'))
     return results
 
 
