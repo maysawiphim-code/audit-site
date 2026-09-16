@@ -406,6 +406,8 @@ function checkAgainstData(g,name,base,issues,ok){
   const arr=base.slice().sort((a,b)=>a-b);
   const set={has:x=>{const v=parseFloat(x);return arr.some(b=>Math.abs(b-v)<=EPS);}};
   const add=(sev,r,c,title,detail)=>issues.push({sheet:name,cell:A1(r,c),row:r+1,sev,title,detail});
+  // ข้อความสรุป/หัวเรื่องไม่เคยถูกใส่สี จึงตรวจเสมอ (ไม่ถูกกรองทิ้งด้วยตัวกรองสี)
+  const addText=(sev,r,c,title,detail)=>issues.push({sheet:name,cell:A1(r,c),row:r+1,sev,title,detail,exempt:true});
   let checked=0,bad=0;
   for(let r=0;r<g.length;r++){
     for(let c=0;c<g[r].length;c++){
@@ -423,22 +425,89 @@ function checkAgainstData(g,name,base,issues,ok){
     // ตัวเลขที่ฝังในข้อความสรุป
     for(let c=0;c<g[r].length;c++){
       const t=S(g[r][c]); if(t.length<6||isNum(g[r][c]))continue;
-      if(/[…]|\.{5,}/.test(t)) add('warn',r,c,'ยังไม่ได้เติมข้อความ','ข้อความสรุปยังเป็นจุดไข่ปลา: "'+t.slice(0,60)+'"');
+      if(/[…]|\.{5,}/.test(t)) addText('bad',r,c,'ยังไม่ได้เติมข้อความ','ข้อความสรุปยังเป็นจุดไข่ปลา ต้องเติมก่อนส่งงาน: "'+t.slice(0,70)+'"');
       const nums=t.match(/\d[\d,]*\.?\d*/g)||[];
       nums.forEach(ns=>{
         const v=parseFloat(ns.replace(/,/g,''));
-        if(!isFinite(v)||v<100)return;
+        if(!isFinite(v))return;
         if(/%/.test(t)&&t.indexOf(ns+'%')>=0){
-          if(!set.has((v/100).toFixed(4))) add('warn',r,c,'ตัวเลขในข้อความไม่ตรง',`ข้อความระบุ ${ns}% แต่ไม่พบสัดส่วนนี้ในชีต data`);
+          if(v<100&&!set.has((v/100).toFixed(4))) addText('warn',r,c,'ตัวเลขในข้อความไม่ตรง',`ข้อความระบุ ${ns}% แต่ไม่พบสัดส่วนนี้ในชีต data`);
           return;
         }
+        // เลขที่ไม่มีหน่วยกำกับ (คน/คัน) และน้อยกว่า 100 มักเป็นเลขลำดับข้อ/อื่น ๆ ข้ามได้
+        // แต่ถ้ามีหน่วยกำกับชัดเจนต้องตรวจเสมอ แม้ค่าจะน้อย (เช่น ยอดคนเดินเท้าที่มักน้อยกว่า 100)
+        const hasUnit=new RegExp(ns.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*(คน|คัน)').test(t);
+        if(!hasUnit&&v<100)return;
         if(v>2500&&v<2600)return;              // พ.ศ.
-        if(!set.has(v.toFixed(4))) add('bad',r,c,'ตัวเลขในข้อความไม่ตรง',`ข้อความสรุประบุ ${ns} แต่ไม่พบตัวเลขนี้ในชีต data — ตรวจว่าคัดลอกยอดมาถูกหรือไม่`);
+        if(!set.has(v.toFixed(4))) addText('bad',r,c,'ตัวเลขในข้อความไม่ตรง',`ข้อความสรุประบุ ${ns} แต่ไม่พบตัวเลขนี้ในชีต data — ตรวจว่าคัดลอกยอดมาถูกหรือไม่`);
       });
     }
   }
   if(checked&&!bad) ok.push({sheet:name,title:`ตัวเลข ${checked} ค่าตรงกับชีต data ทั้งหมด`});
   return checked;
+}
+
+/* ---- ตรวจว่าคำอธิบายใต้หัวข้อ (ข้อความ % ในชีตสรุป) ตรงกับตัวเลขในตารางของชีตเดียวกันหรือไม่ ---- */
+function checkNarrative(g,name,issues){
+  const add=(sev,r,c,title,detail)=>issues.push({sheet:name,cell:A1(r,c),row:r+1,sev,title,detail,exempt:true});
+  const core=t=>S(t).replace(/\(.*?\)|\s/g,'');
+
+  // รายการ (ชื่อ, %สัดส่วน) ในชีตนี้
+  const items=[];
+  for(let r=0;r<g.length;r++){
+    let label='';
+    for(let c=0;c<g[r].length;c++){
+      const v=g[r][c];
+      if(typeof v==='string'&&S(v)&&!label){ label=S(v); continue; }
+      if(label&&isNum(v)&&v>0&&v<0.999){ items.push({row:r,label,core:core(label),pct:v}); break; }
+    }
+  }
+  // จัดกลุ่มรายการที่อยู่ติดกัน = หมวดเดียวกัน
+  items.forEach((it,i)=>{ it.grp = i===0?0:(items[i-1].grp+(it.row-items[i-1].row>1?1:0)); });
+  const groupOf=it=>items.filter(x=>x.grp===it.grp);
+
+  for(let r=0;r<g.length;r++){
+    for(let c=0;c<g[r].length;c++){
+      const t=S(g[r][c]);
+      if(t.length<12||t.indexOf('%')<0)continue;
+      const matched=[];
+      let prevEnd=0;
+      const re=/(\d[\d,]*\.?\d*)\s*%/g; let m;
+      while((m=re.exec(t))){
+        const ns=m[1], p=parseFloat(ns.replace(/,/g,''))/100;
+        // เทียบชื่อรายการเฉพาะช่วงข้อความ "ก่อนหน้า" ตัวเลขนี้ (ไม่รวมทั้งประโยค)
+        // กันกรณีชื่อรายการอื่นที่อยู่ถัดไปในประโยคดันไปจับคู่กับตัวเลขก่อนหน้าผิด ๆ
+        const local=core(t.slice(prevEnd,m.index+m[0].length));
+        prevEnd=m.index+m[0].length;
+        const owners=items.filter(i=>Math.abs(i.pct-p)<=0.0005);
+        if(!owners.length){
+          add('warn',r,c,'คำอธิบายอ้างตัวเลขที่ไม่มีในตาราง',`ข้อความ "${t.slice(0,70)}" ระบุ ${ns}% แต่ไม่พบสัดส่วนนี้ในตารางของชีตนี้`);
+          continue;
+        }
+        const hit=owners.find(o=>o.core&&local.indexOf(o.core)>=0);
+        if(!hit){
+          add('bad',r,c,'คำอธิบายอ้างรายการไม่ตรงกับตาราง',`ข้อความ "${t.slice(0,70)}" ระบุ ${ns}% ติดกับรายการอื่น แต่ในตาราง ${ns}% เป็นสัดส่วนของ "${owners[0].label}" (แถว ${owners[0].row+1}) — ตัวเลขกับชื่อรายการอาจสลับกัน`);
+          continue;
+        }
+        matched.push(hit);
+      }
+      if(matched.length&&/ส่วนใหญ่|มากที่สุด|เยอะที่สุด/.test(t)){
+        const grp=groupOf(matched[0]);
+        const top=grp.reduce((a,b)=>b.pct>a.pct?b:a,grp[0]);
+        const maxMatched=Math.max(...matched.map(mm=>mm.pct));
+        if(top.core&&t.replace(/\s/g,'').indexOf(top.core)<0&&top.pct>maxMatched+0.0005){
+          add('bad',r,c,'คำอธิบายไม่ตรงกับค่าสูงสุดในตาราง',`ข้อความ "${t.slice(0,70)}" บอกว่าเป็นส่วนใหญ่ แต่ค่าสูงสุดของหมวดนี้คือ "${top.label}" ${(top.pct*100).toFixed(2)}%`);
+        }
+      }
+      if(matched.length>=2&&/ไม่แตกต่างกัน|ใกล้เคียงกัน/.test(t)){
+        const hi=matched.reduce((a,b)=>b.pct>a.pct?b:a,matched[0]);
+        const lo=matched.reduce((a,b)=>b.pct<a.pct?b:a,matched[0]);
+        if(hi.pct-lo.pct>0.20){
+          add('bad',r,c,'คำอธิบายไม่ตรงกับตาราง',`ข้อความ "${t.slice(0,60)}" บอกว่าไม่แตกต่างกัน แต่ "${hi.label}" ${(hi.pct*100).toFixed(2)}% กับ "${lo.label}" ${(lo.pct*100).toFixed(2)}% ต่างกันมาก`);
+        }
+      }
+    }
+  }
 }
 
 function checkHourly(g,name,baseArr,issues,ok){
@@ -545,9 +614,10 @@ function auditWorkbook(wb){
     if(!g.some(r=>r.some(v=>isNum(v)))){rep.sheets.push({name:n,note:'ไม่มีตัวเลขให้ตรวจ'});return;}
     if(checkHourly(g,n,base,rep.issues,rep.ok))return;
     if(/สรุป/.test(n)&&D) checkAgainstData(g,n,D.allNums,rep.issues,rep.ok);
+    if(/สรุป|แผนที่/.test(n)) checkNarrative(g,n,rep.issues);
   });
-  // ตรวจเฉพาะช่องที่ใส่สีไว้ในไฟล์
-  rep.issues=rep.issues.filter(i=>!i.cell||!fills[i.sheet]||fills[i.sheet][i.cell]);
+  // ตรวจเฉพาะช่องที่ใส่สีไว้ในไฟล์ (ยกเว้นข้อความสรุป/หัวเรื่อง ซึ่งไม่เคยถูกใส่สี จึงตรวจเสมอ)
+  rep.issues=rep.issues.filter(i=>i.exempt||!i.cell||!fills[i.sheet]||fills[i.sheet][i.cell]);
   rep.dataName=dataName;rep.visible=names;rep.grids=grids;rep.fills=fills;rep.ctx=ctx;
   return rep;
 }
